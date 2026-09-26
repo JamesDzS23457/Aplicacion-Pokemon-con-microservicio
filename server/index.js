@@ -5,9 +5,7 @@ const pokeApiUrl = 'https://pokeapi.co/api/v2/pokemon/';
 const onePieceApiUrl = 'https://api.api-onepiece.com/v2/characters/en';
 let onePieceCharacters;
 
-// La API de api-onepiece.com no trae raza ni imagenes, asi que mantenemos un
-// mapa local para los personajes mas conocidos. Si un personaje no esta aqui,
-// se asume "Humano" (la raza mas comun en la serie) y se marca como estimado.
+
 const raceMap = {
   'monkey d luffy': 'Humano',
   'roronoa zoro': 'Humano',
@@ -156,7 +154,7 @@ async function getPokemon(name) {
       especie = genus?.genus || '';
     }
   } catch {
-    // si falla la consulta de especie, dejamos los valores por defecto
+    
   }
 
   return { ...pokemon, genero, especie };
