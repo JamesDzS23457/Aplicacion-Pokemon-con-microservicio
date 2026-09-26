@@ -1,12 +1,15 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { usePokemon } from '../../context/PokemonContext';
 
 export default function AboutScreen() {
   const { pokemon } = usePokemon();
   const movimientos = pokemon?.moves ?? [];
+  const tipos = pokemon?.types?.map((item) => item.type?.name).filter(Boolean).join(' / ');
+  const habilidades = pokemon?.abilities?.map((item) => item.ability?.name).filter(Boolean).join(' / ');
+  const estadisticas = pokemon?.stats ?? [];
 
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container}>
       {pokemon ? (
         <>
           <Text style={styles.title}>{pokemon.name.toUpperCase()}</Text>
@@ -14,9 +17,20 @@ export default function AboutScreen() {
           <View style={styles.datos}>
             <Text style={styles.etiqueta}>Altura: {pokemon.height}</Text>
             <Text style={styles.etiqueta}>Peso: {pokemon.weight}</Text>
+            <Text style={styles.etiqueta}>Genero: {pokemon.gender ?? 'N/A'}</Text>
+            <Text style={styles.etiqueta}>Elemento: {tipos || 'N/A'}</Text>
+            <Text style={styles.etiqueta}>Especie: {pokemon.especie ?? 'N/A'}</Text>
+            <Text style={styles.etiqueta}>Habitat: {pokemon.habitat ?? 'N/A'}</Text>
+            <Text style={styles.etiqueta}>Habilidades: {habilidades || 'N/A'}</Text>
           </View>
+          <Text style={styles.subtitulo}>Estadisticas base</Text>
+          {estadisticas.map((item) => (
+            <Text key={item.stat?.name} style={styles.movimiento}>
+              {item.stat?.name ?? 'N/A'}: {item.base_stat}
+            </Text>
+          ))}
           <Text style={styles.subtitulo}>Movimientos</Text>
-          {movimientos.slice(0, 2).map((item, index) => (
+          {movimientos.slice(0, 6).map((item, index) => (
             <Text key={`${item.move?.name}-${index}`} style={styles.movimiento}>
               {String(index + 1).padStart(2, '0')} {item.move?.name ?? 'N/A'}
             </Text>
@@ -28,7 +42,7 @@ export default function AboutScreen() {
           <Text style={styles.texto}>Busca un Pokemon en Home para ver sus datos aqui.</Text>
         </>
       )}
-    </View>
+    </ScrollView>
   );
 }
 

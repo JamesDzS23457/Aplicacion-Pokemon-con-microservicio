@@ -54,7 +54,20 @@ async function getPokemon(name) {
     throw error;
   }
 
-  return response.json();
+  const pokemon = await response.json();
+  const speciesResponse = await fetch(pokemon.species.url);
+
+  if (speciesResponse.ok) {
+    const species = await speciesResponse.json();
+    const genderRate = species.gender_rate;
+    pokemon.gender = genderRate === -1
+      ? 'Sin genero'
+      : `${genderRate === 0 ? 0 : 100 - genderRate * 12.5}% macho / ${genderRate * 12.5}% hembra`;
+    pokemon.habitat = species.habitat?.name ?? 'N/A';
+    pokemon.especie = species.genera?.find((item) => item.language?.name === 'en')?.genus ?? 'N/A';
+  }
+
+  return pokemon;
 }
 
 const server = http.createServer(async (request, response) => {

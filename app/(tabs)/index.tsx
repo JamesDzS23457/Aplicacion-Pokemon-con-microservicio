@@ -76,23 +76,18 @@ export default function HomeScreen() {
 
         {mensaje ? <Text style={styles.mensaje}>{mensaje}</Text> : null}
 
-        <View style={styles.filaDatos}>
-          <View style={styles.columnaMedidas}>
-            <Text style={styles.tituloSeccion}>Informacion</Text>
-            <Text style={styles.etiqueta}>Altura: {pokemon?.height ?? '-'}</Text>
-            <Text style={styles.etiqueta}>Peso: {pokemon?.weight ?? '-'}</Text>
+        <View style={styles.filaTarjetas}>
+          <View style={styles.tarjetaExtra}>
+            <Text style={styles.iconoTarjeta}>G</Text>
+            <Text style={styles.etiquetaTarjeta}>Genero</Text>
+            <Text style={styles.valorTarjeta}>{pokemon?.gender ?? '-'}</Text>
           </View>
-
-          <View style={styles.columnaMovimientos}>
-            <Text style={styles.tituloSeccion}>Ataques</Text>
-            <View style={styles.recuadroMovimiento}>
-              <Text style={styles.numeroMovimiento}>01</Text>
-              <Text style={styles.movimiento}>{pokemon ? primerMovimiento : 'N/A'}</Text>
-            </View>
-            <View style={styles.recuadroMovimiento}>
-              <Text style={styles.numeroMovimiento}>02</Text>
-              <Text style={styles.movimiento}>{pokemon ? segundoMovimiento : 'N/A'}</Text>
-            </View>
+          <View style={styles.tarjetaExtra}>
+            <Text style={styles.iconoTarjeta}>E</Text>
+            <Text style={styles.etiquetaTarjeta}>Elemento</Text>
+            <Text style={styles.valorTarjeta}>
+              {pokemon?.types?.map((item) => item.type?.name).filter(Boolean).join(' / ') ?? '-'}
+            </Text>
           </View>
         </View>
       </ScrollView>
@@ -223,54 +218,38 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
   },
-  filaDatos: {
+  filaTarjetas: {
     flexDirection: 'row',
-    gap: 18,
+    gap: 12,
     marginTop: 24,
   },
-  columnaMedidas: {
+  tarjetaExtra: {
     flex: 1,
-    justifyContent: 'center',
-    gap: 18,
-  },
-  tituloSeccion: {
-    color: '#172b35',
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 2,
-  },
-  etiqueta: {
-    color: '#536b75',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  columnaMovimientos: {
-    flex: 1,
-    gap: 12,
-  },
-  recuadroMovimiento: {
-    minHeight: 50,
-    borderRadius: 10,
-    borderLeftWidth: 4,
-    borderLeftColor: '#f2b84b',
     backgroundColor: '#fff',
-    flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    gap: 8,
+    minHeight: 112,
+    borderRadius: 12,
+    padding: 12,
     shadowColor: '#19343f',
     shadowOpacity: 0.06,
     shadowRadius: 6,
     elevation: 1,
   },
-  numeroMovimiento: {
-    color: '#a1b3ba',
-    fontSize: 11,
+  iconoTarjeta: {
+    color: '#e85d4a',
+    fontSize: 24,
     fontWeight: '800',
   },
-  movimiento: {
-    color: '#253d47',
-    fontSize: 14,
+  etiquetaTarjeta: {
+    color: '#637983',
+    fontSize: 13,
+    marginTop: 5,
+  },
+  valorTarjeta: {
+    color: '#172b35',
+    fontSize: 13,
     fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 5,
   },
 });

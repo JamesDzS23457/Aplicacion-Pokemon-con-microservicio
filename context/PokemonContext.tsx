@@ -5,8 +5,14 @@ export type Pokemon = {
   name: string;
   height: number;
   weight: number;
+  gender?: string;
+  habitat?: string;
+  especie?: string;
+  types?: Array<{ type?: { name?: string } }>;
+  abilities?: Array<{ ability?: { name?: string } }>;
+  stats?: Array<{ base_stat: number; stat?: { name?: string } }>;
   moves?: Array<{ move?: { name?: string } }>;
-  sprites?: { front_default?: string | null };
+  sprites?: { front_default?: string | null; other?: { 'official-artwork'?: { front_default?: string | null } } };
 };
 
 type PokemonContextValue = {
