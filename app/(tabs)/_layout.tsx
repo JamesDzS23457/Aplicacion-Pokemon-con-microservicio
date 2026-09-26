@@ -33,6 +33,8 @@ export default function TabsLayout() {
           ),
         }}
       />
+      <Tabs.Screen name="one-piece" options={{ title: 'One Piece', tabBarIcon: ({ color, size }) => <Ionicons name="boat-outline" size={size} color={color} /> }} />
+      <Tabs.Screen name="one-piece-about" options={{ title: 'Datos OP', tabBarIcon: ({ color, size }) => <Ionicons name="reader-outline" size={size} color={color} /> }} />
     </Tabs>
   );
 }

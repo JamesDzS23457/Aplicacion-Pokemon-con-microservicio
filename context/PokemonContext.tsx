@@ -5,14 +5,11 @@ export type Pokemon = {
   name: string;
   height: number;
   weight: number;
-  gender?: string;
-  habitat?: string;
-  especie?: string;
-  types?: Array<{ type?: { name?: string } }>;
-  abilities?: Array<{ ability?: { name?: string } }>;
-  stats?: Array<{ base_stat: number; stat?: { name?: string } }>;
   moves?: Array<{ move?: { name?: string } }>;
-  sprites?: { front_default?: string | null; other?: { 'official-artwork'?: { front_default?: string | null } } };
+  sprites?: { front_default?: string | null; front_shiny?: string | null; back_shiny?: string | null };
+  types?: Array<{ type?: { name?: string } }>;
+  genero?: string;
+  especie?: string;
 };
 
 type PokemonContextValue = {
@@ -31,9 +28,8 @@ export function PokemonProvider({ children }: PropsWithChildren) {
   const [mensaje, setMensaje] = useState('');
 
   const buscarPokemon = async (nombre: string) => {
-    const nombreNormalizado = nombre.trim().toLowerCase();
-
-    if (!nombreNormalizado) {
+    const normalizedName = nombre.trim().toLowerCase();
+    if (!normalizedName) {
       setPokemon(null);
       setMensaje('Escribe el nombre de un Pokemon.');
       return;
@@ -41,20 +37,14 @@ export function PokemonProvider({ children }: PropsWithChildren) {
 
     setCargando(true);
     setMensaje('');
-
     try {
-      const respuesta = await fetch(`${apiUrl}/api/pokemon`, {
+      const response = await fetch(`${apiUrl}/api/pokemon`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: nombreNormalizado }),
+        body: JSON.stringify({ name: normalizedName }),
       });
-
-      if (!respuesta.ok) {
-        throw new Error(respuesta.status === 404 ? 'Pokemon no encontrado' : 'No se pudo consultar el servicio');
-      }
-
-      const datos: Pokemon = await respuesta.json();
-      setPokemon(datos);
+      if (!response.ok) throw new Error(response.status === 404 ? 'Pokemon no encontrado' : 'No se pudo consultar el servicio');
+      setPokemon(await response.json());
     } catch (error) {
       setPokemon(null);
       setMensaje(error instanceof Error ? error.message : 'No se pudo consultar el servicio.');
@@ -63,19 +53,11 @@ export function PokemonProvider({ children }: PropsWithChildren) {
     }
   };
 
-  return (
-    <PokemonContext.Provider value={{ pokemon, cargando, mensaje, buscarPokemon }}>
-      {children}
-    </PokemonContext.Provider>
-  );
+  return <PokemonContext.Provider value={{ pokemon, cargando, mensaje, buscarPokemon }}>{children}</PokemonContext.Provider>;
 }
 
 export function usePokemon() {
   const context = useContext(PokemonContext);
-
-  if (!context) {
-    throw new Error('usePokemon debe usarse dentro de PokemonProvider');
-  }
-
+  if (!context) throw new Error('usePokemon debe usarse dentro de PokemonProvider');
   return context;
 }

@@ -1,10 +1,13 @@
 import { Stack } from 'expo-router';
+import { OnePieceProvider } from '../context/OnePieceContext';
 import { PokemonProvider } from '../context/PokemonContext';
 
 export default function RootLayout() {
   return (
     <PokemonProvider>
-      <Stack screenOptions={{ headerShown: false }} />
+      <OnePieceProvider>
+        <Stack screenOptions={{ headerShown: false }} />
+      </OnePieceProvider>
     </PokemonProvider>
   );
 }
