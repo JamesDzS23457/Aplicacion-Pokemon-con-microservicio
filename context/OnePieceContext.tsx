@@ -39,13 +39,19 @@ export function OnePieceProvider({ children }: PropsWithChildren) {
     setCargando(true);
     setMensaje('');
     try {
-      const response = await fetch(`${apiUrl}/api/one-piece`, {
+      const response = await fetch(`${apiUrl}/api/characters/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: nombre.trim() }),
       });
-      if (!response.ok) throw new Error(response.status === 404 ? 'Personaje no encontrado' : 'No se pudo consultar One Piece');
-      setCharacter(await response.json());
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        if (response.status === 400) throw new Error(detail?.error || 'Escribe el nombre de un personaje.');
+        if (response.status === 404) throw new Error(detail?.error || 'Personaje no encontrado en la base de datos local');
+        throw new Error(detail?.error || 'No se pudo consultar el servicio');
+      }
+      const payload = await response.json();
+      setCharacter(payload.data?.[0] ?? null);
     } catch (error) {
       setCharacter(null);
       setMensaje(error instanceof Error ? error.message : 'No se pudo consultar One Piece.');

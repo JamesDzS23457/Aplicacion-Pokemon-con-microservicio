@@ -1,0 +1,16 @@
+{
+  "name": "pokemon-service",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "pg": "^8.23.1"
+  }
+}

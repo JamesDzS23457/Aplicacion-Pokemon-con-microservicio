@@ -38,13 +38,19 @@ export function PokemonProvider({ children }: PropsWithChildren) {
     setCargando(true);
     setMensaje('');
     try {
-      const response = await fetch(`${apiUrl}/api/pokemon`, {
+      const response = await fetch(`${apiUrl}/api/pokemon/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: normalizedName }),
       });
-      if (!response.ok) throw new Error(response.status === 404 ? 'Pokemon no encontrado' : 'No se pudo consultar el servicio');
-      setPokemon(await response.json());
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        if (response.status === 400) throw new Error(detail?.error || 'Escribe el nombre de un Pokemon.');
+        if (response.status === 404) throw new Error(detail?.error || 'Pokemon no encontrado en la base de datos local');
+        throw new Error(detail?.error || 'No se pudo consultar el servicio');
+      }
+      const payload = await response.json();
+      setPokemon(payload.data?.[0] ?? null);
     } catch (error) {
       setPokemon(null);
       setMensaje(error instanceof Error ? error.message : 'No se pudo consultar el servicio.');

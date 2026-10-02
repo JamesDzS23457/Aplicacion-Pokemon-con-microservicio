@@ -1,0 +1,16 @@
+{
+  "name": "pokemon-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "gateway": "node gateway/src/index.js",
+    "pokemon": "node services/pokemon-service/src/index.js",
+    "onepiece": "node services/onepiece-service/src/index.js",
+    "seed": "node scripts/seed.js",
+    "verify": "node scripts/verify.js",
+    "offline-test": "bash scripts/test-offline.sh",
+    "setup": "npm install --prefix gateway && npm install --prefix services/pokemon-service && npm install --prefix services/onepiece-service && node scripts/seed.js",
+    "dev": "node scripts/dev.js"
+  }
+}

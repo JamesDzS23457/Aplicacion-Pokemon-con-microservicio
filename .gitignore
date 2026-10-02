@@ -33,9 +33,26 @@ yarn-error.*
 # local env files
 .env*.local
 
+# backend
+backend/node_modules/
+backend/data/
+backend/**/node_modules/
+*.db
+*.db-wal
+*.db-shm
+
+# Archivos de asistencia IA - NO se suben al repositorio.
+# Son notas de trabajo entre IA y developer, no codigo del proyecto.
+AGENTS.md
+CLAUDE.md
+memory.md
+MEMORY.md
+
 # typescript
 *.tsbuildinfo
 
 # generated native folders
 /ios
 /android
+
+.env

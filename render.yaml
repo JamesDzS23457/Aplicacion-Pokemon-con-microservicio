@@ -1,0 +1,82 @@
+# Despliegue en Render: 3 web services independientes + gateway.
+#   render blueprint launch
+#
+# LA BASE DE DATOS YA NO ESTA AQUI.
+#
+# Con SQLite cada servicio necesitaba un disco persistente, porque el archivo
+# .db vivia dentro del servidor. Con Postgres (Supabase) eso desaparece: la
+# base de datos es un servicio externo y Render no tiene que guardarla.
+#
+# Eso significa que esto YA FUNCIONA EN VERCEL, RAILWAY O CUALQUIER HOST:
+# no hay nada atado al disco del servidor. (Vercel tiene una salvedad: sus
+# funciones serverless se congelan tras un rato de inactividad, asi que la
+# primera peticion puede tardar. Render es mejor para este caso.)
+
+services:
+  # ---------------------------------------------------------------
+  # Microservicio 1: Pokemon (Postgres propia, 20 registros)
+  # ---------------------------------------------------------------
+  - type: web
+    name: pokemon-service
+    runtime: node
+    plan: free
+    rootDir: backend/services/pokemon-service
+    buildCommand: npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    envVars:
+      # sync: false = NO aparece en el dashboard. Es la opcion segura para
+      # credenciales: asi la clave nunca se imprime en los logs.
+      # En el dashboard: Environment > tu servicio > Secret Files / Environment
+      - key: POKEMON_DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: PORT
+        value: 4001
+
+  # ---------------------------------------------------------------
+  # Microservicio 2: One Piece (Postgres propia, 20 personajes)
+  # ---------------------------------------------------------------
+  - type: web
+    name: onepiece-service
+    runtime: node
+    plan: free
+    rootDir: backend/services/onepiece-service
+    buildCommand: npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: ONEPIECE_DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: PORT
+        value: 4002
+
+  # ---------------------------------------------------------------
+  # API Gateway: unica URL que conoce el frontend
+  # ---------------------------------------------------------------
+  - type: web
+    name: gateway
+    runtime: node
+    plan: free
+    rootDir: backend/gateway
+    buildCommand: npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 3000
+      # fromService: Render inyecta la URL interna del otro servicio
+      # automaticamente. No hay que escribirla a mano.
+      - key: POKEMON_SERVICE_URL
+        fromService:
+          name: pokemon-service
+          type: web
+          property: hostport
+      - key: ONEPIECE_SERVICE_URL
+        fromService:
+          name: onepiece-service
+          type: web
+          property: hostport
