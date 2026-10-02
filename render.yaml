@@ -69,15 +69,34 @@ services:
     envVars:
       # PORT lo detecta Render. Ver la nota en pokemon-service.
       #
-      # fromService: Render inyecta la URL interna del otro servicio
-      # automaticamente. No hay que escribirla a mano.
+      # fromService + envVarKey: Render inyecta el VALOR de una variable de
+      # entorno del otro servicio. RENDER_EXTERNAL_HOSTNAME es una variable
+      # que Render define sola en cada web service y vale el subdominio
+      # publico, por ejemplo "pokemon-service-rtjy.onrender.com".
+      #
+      # POR QUE NO se usa property: hostport (la red privada interna):
+      #   propiedad hostport daria "pokemon-service:10000". Eso funciona entre
+      #   servicios DE PAGO en la misma region, pero los nuestros son plan
+      #   FREE, y Render dice en su documentacion: "Free web services can't
+      #   receive private network traffic". Un servicio free NO tiene
+      #   hostname en la red privada, asi que esa direccion da ENOTFOUND
+      #   (comprobado con el campo detail del 503 del gateway).
+      #   Por eso el gateway llama al microservicio por su URL PUBLICA.
+      #
+      # Esto NO rompe el requisito del profesor: el gateway sigue siendo la
+      # unica URL publica que conoce el frontend, y sigue llamando a NUESTROS
+      # microservicios, no a PokeAPI ni a One Piece API. La unica diferencia
+      # es que el salto gateway -> microservicio sale a internet en vez de ir
+      # por la red privada, porque la red privada no esta disponible en free.
+      #
+      # config.js le antepone "https://" al host (ver normalizeUrl).
       - key: POKEMON_SERVICE_URL
         fromService:
           name: pokemon-service
           type: web
-          property: hostport
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
       - key: ONEPIECE_SERVICE_URL
         fromService:
           name: onepiece-service
           type: web
-          property: hostport
+          envVarKey: RENDER_EXTERNAL_HOSTNAME

@@ -10,7 +10,16 @@
 // microservicio esta caido, se responde 503, no se rompe el gateway entero.
 // ---------------------------------------------------------------------------
 
-const TIMEOUT_MS = 10_000; // 10s: si un servicio no responde, se corta
+// Timeout de la peticion al microservicio.
+//
+// 60s y no 10s: los servicios estan en el plan FREE de Render, que los
+// "duerme" a los 15 minutos sin trafico y tarda alrededor de un minuto en
+// despertarlos. Con 10s, la primera peticion despues de un rato de inactividad
+// abortaba SIEMPRE, aunque el microservicio estuviera a punto de responder.
+// 60s cubre el arranque en frio. El coste es que un servicio realmente caido
+// tarda mas en reportarse como 503, pero para esta app prima que la primera
+// busqueda funcione.
+const TIMEOUT_MS = 60_000;
 
 /**
  * Reenvia una peticion y devuelve { status, payload }.
