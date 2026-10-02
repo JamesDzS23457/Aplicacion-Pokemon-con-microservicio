@@ -33,11 +33,6 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'gateway' });
 });
 
-/** Endpoint temporal para verificar que commit esta desplegado. */
-app.get('/test', (_req, res) => {
-  res.json({ commit: '40c517c', service: 'gateway' });
-});
-
 app.use('/', indexRoutes);
 app.use('/api/pokemon', pokemonRoutes);
 app.use('/api/characters', characterRoutes);

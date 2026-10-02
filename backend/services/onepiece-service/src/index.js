@@ -39,11 +39,6 @@ app.get('/health', async (_req, res, next) => {
   }
 });
 
-/** Endpoint temporal para verificar commit desplegado. */
-app.get('/test', (_req, res) => {
-  res.json({ commit: '40c517c', service: 'onepiece-service' });
-});
-
 app.use('/api/characters', charactersRoutes);
 
 /**

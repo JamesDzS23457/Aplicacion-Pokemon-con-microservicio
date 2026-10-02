@@ -32,8 +32,10 @@ services:
         sync: false
       - key: DATABASE_SSL
         value: "true"
-      - key: PORT
-        value: 4001
+      # NO se fija PORT a proposito. Render detecta en que puerto escucha la
+      # app y lo inyecta solo en la variable PORT. Fijarlo aqui confusion:
+      # si alguien pone 5432 (el de Postgres) por error, el gateway recibe
+      # la URL interna equivocada y todas las llamadas fallan con 503.
 
   # ---------------------------------------------------------------
   # Microservicio 2: One Piece (Postgres propia, 20 personajes)
@@ -51,8 +53,7 @@ services:
         sync: false
       - key: DATABASE_SSL
         value: "true"
-      - key: PORT
-        value: 4002
+      # PORT lo detecta Render. Ver la nota en pokemon-service.
 
   # ---------------------------------------------------------------
   # API Gateway: unica URL que conoce el frontend
@@ -66,8 +67,8 @@ services:
     startCommand: node src/index.js
     healthCheckPath: /health
     envVars:
-      - key: PORT
-        value: 3000
+      # PORT lo detecta Render. Ver la nota en pokemon-service.
+      #
       # fromService: Render inyecta la URL interna del otro servicio
       # automaticamente. No hay que escribirla a mano.
       - key: POKEMON_SERVICE_URL

@@ -26,11 +26,6 @@ app.get('/health', async (_req, res, next) => {
   }
 });
 
-/** Endpoint temporal para verificar commit desplegado. */
-app.get('/test', (_req, res) => {
-  res.json({ commit: '40c517c', service: 'pokemon-service' });
-});
-
 app.use('/api/pokemon', pokemonRoutes);
 
 /** Middleware de errores. Necesita los 4 parametros para que Express lo reconozca. */
