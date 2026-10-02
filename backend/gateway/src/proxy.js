@@ -52,13 +52,21 @@ export async function proxy(serviceUrl, path, { method = 'GET', body } = {}) {
   } catch (error) {
     // AbortError = se paso el timeout. Cualquier otro error = conexion
     // rechazada (servicio caido). En ambos casos es 503 Service Unavailable.
+    //
+    // `detail` expone el codigo real del sistema (ENOTFOUND, ECONNREFUSED,
+    // ETIMEDOUT...) porque "Microservicio no disponible" no distingue entre
+    // "el nombre interno no resuelve" y "el puerto esta cerrado", y desde
+    // fuera de Render esa diferencia no se puede observar. No contiene
+    // credenciales: las URLs de servicio no llevan usuario ni clave.
     const isTimeout = error.name === 'AbortError';
+    const detail = error.cause?.code || error.cause?.message || error.message;
     return {
       status: 503,
       payload: {
         error: isTimeout
           ? 'El microservicio tardo demasiado en responder'
           : 'Microservicio no disponible',
+        detail,
       },
     };
   } finally {
