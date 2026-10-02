@@ -151,6 +151,32 @@ Vercel o cualquier host.
 El frontend web se despliega aparte (Vercel o Netlify) con
 `EXPO_PUBLIC_API_URL` apuntando al gateway.
 
+### Si el gateway responde `503 "Microservicio no disponible"`
+
+El gateway expone `GET /`, que dice **a qué URL apunta** cada microservicio.
+Míralo antes de tocar nada, porque cada síntoma tiene una causa distinta:
+
+| Lo que ves en `GET /` | Causa | Arreglo |
+|---|---|---|
+| `...:5432` | Alguien fijó `PORT=5432` a mano en el dashboard | Borrar ese `PORT` (Render detecta el puerto solo) |
+| Host sin `http(s)://` | `fetch()` exige URL absoluta | Ya lo normaliza `normalizeUrl()` en `config.js` |
+| Respuesta con `"detail":"ENOTFOUND"` | El hostname **no existe**: estás usando la red privada en un servicio FREE | Usar la URL pública (ver abajo) |
+
+**Límite del plan free.** Render documenta: *"Free web services can't receive
+private network traffic."* Un servicio free **no tiene hostname en la red
+privada**, así que `fromService` con `property: hostport` (por ejemplo
+`pokemon-service:10000`) da `ENOTFOUND`. Por eso `render.yaml` referencia
+`RENDER_EXTERNAL_HOSTNAME` (el subdominio público) y `config.js` antepone
+`https://`. Sigue siendo nuestro propio microservicio; lo único que cambia es
+que el salto gateway → microservicio sale a internet, porque la red privada no
+está disponible en free.
+
+**Arranque en frío.** El plan free duerme los servicios a los 15 minutos sin
+tráfico y tarda ~1 minuto en despertarlos. El proxy del gateway espera hasta
+**60 s** a propósito, para que la primera búsqueda tras un rato de inactividad
+no falle. La primera petición del día puede tardar ese minuto: es normal, no
+está roto.
+
 ## Notas sobre los datos
 
 - **`race` (raza)** no existe en la API de One Piece. Es un mapa curado a mano
