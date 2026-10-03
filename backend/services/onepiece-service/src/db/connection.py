@@ -89,6 +89,13 @@ async def get_pool():
             min_size=1,
             max_size=10,          # conexiones maximas simultaneas del proceso
             command_timeout=30,   # aborta una consulta que tarde mas de 30s
+            # Supabase pone un pooler delante de PostgreSQL (Supavisor). En modo
+            # TRANSACCION ese pooler reutiliza conexiones entre clientes y no
+            # admite sentencias preparadas con nombre; asyncpg las usa por
+            # defecto y fallaria con "prepared statement already exists".
+            # Desactivar la cache (0) evita ese fallo y funciona igual con el
+            # pooler en modo sesion. El coste es minimo para este trafico.
+            statement_cache_size=0,
         )
     return _pool
 
