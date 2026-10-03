@@ -202,7 +202,10 @@ basta con cambiarla después en Vercel. En producción apunta al gateway.
 Pasos:
 
 1. Importa este repositorio en Vercel (Add New → Project).
-2. Deja la configuración por defecto: manda `vercel.json`.
+2. Si Vercel autodetecta un preset distinto de **Other**, selecciona **Other**.
+   Confirma en *Build & Output Settings*: Build Command
+   `npx expo export --platform web` y Output Directory `dist`. No hace falta
+   definir variables de entorno: `.env.production` ya trae la URL del gateway.
 3. Deploy. Cada `git push` a `main` vuelve a desplegar.
 4. (Opcional) Si prefieres definir la variable en el panel en vez de en
    `.env.production`: Settings → Environment Variables →
