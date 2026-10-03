@@ -17,6 +17,36 @@ import pg from 'pg';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ---------------------------------------------------------------------------
+// CARGA DEL .ENV LOCAL
+//
+// Este modulo lo importa CUALQUIER proceso que hable con la base: el servicio
+// en si, scripts/seed.js y scripts/verify.js. Por eso es el sitio correcto para
+// leer el .env de la raiz del proyecto: da igual como se lance el proceso
+// (npm run backend, node src/index.js, node scripts/verify.js...).
+//
+// En produccion (Render) no existe ningun archivo .env: las variables llegan
+// del entorno y esta funcion no hace nada. Por eso es seguro tenerla aqui.
+// Se busca hacia arriba porque el comando puede correr desde la raiz o desde
+// backend/. loadEnvFile NO pisa variables ya definidas en el entorno.
+// ---------------------------------------------------------------------------
+function buscarEnv(inicio) {
+  let dir = inicio;
+  for (let intento = 0; intento < 6; intento += 1) {
+    const candidato = path.join(dir, '.env');
+    if (fs.existsSync(candidato)) return candidato;
+    const padre = path.dirname(dir);
+    if (padre === dir) return null;
+    dir = padre;
+  }
+  return null;
+}
+
+if (typeof process.loadEnvFile === 'function') {
+  const envFile = buscarEnv(process.cwd());
+  if (envFile) process.loadEnvFile(envFile);
+}
+
 // Base de datos PROPIA de este servicio. Se lee la variable especifica antes
 // que la generica para que pokemon y onepiece nunca apunten al mismo sitio.
 const CONNECTION_STRING =

@@ -28,6 +28,46 @@ from urllib.parse import urlsplit
 
 import asyncpg
 
+# ---------------------------------------------------------------------------
+# CARGA DEL .ENV LOCAL
+#
+# Este modulo lo importan el propio servicio y seed.py, asi que es el punto
+# por el que pasa todo proceso que usa la base. Aqui se lee el .env de la raiz
+# del proyecto sin depender de como se lance. En produccion (Render) no hay
+# archivo .env: las variables llegan del entorno y esto no hace nada.
+#
+# No se usa python-dotenv porque no esta en requirements.txt; basta un parser
+# minimo de lineas KEY=VALUE. No se sobreescribe lo que ya venga del entorno.
+# ---------------------------------------------------------------------------
+def _buscar_env(inicio: Path):
+    actual = inicio
+    for _ in range(6):
+        candidato = actual / ".env"
+        if candidato.is_file():
+            return candidato
+        if actual.parent == actual:
+            return None
+        actual = actual.parent
+    return None
+
+
+def _cargar_env_local() -> None:
+    ruta = _buscar_env(Path.cwd())
+    if ruta is None:
+        return
+    for linea in ruta.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        clave, valor = linea.split("=", 1)
+        clave = clave.strip()
+        valor = valor.strip().strip('"').strip("'")
+        if clave and clave not in os.environ:
+            os.environ[clave] = valor
+
+
+_cargar_env_local()
+
 # Ruta del esquema respecto a este archivo. Se usa Path y no un string relativo
 # para que funcione sin importar desde que carpeta se lance el proceso.
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
