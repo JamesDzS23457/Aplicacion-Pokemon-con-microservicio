@@ -24,6 +24,17 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
 
+// Carga las variables del .env de la RAIZ del proyecto. Los scripts se lanzan
+// sin dotenv y sin --env-file, asi que sin esto los dos microservicios mueren
+// al arrancar con "Falta POKEMON_DATABASE_URL (o DATABASE_URL) en el entorno."
+// y solo queda vivo el gateway (parece que "no arranca nada").
+// loadEnvFile no pisa variables ya definidas en el entorno (verificado en Node
+// 24), asi que exportar algo a mano siempre tiene prioridad sobre el archivo.
+const envFile = path.join(root, '..', '.env');
+if (existsSync(envFile) && typeof process.loadEnvFile === 'function') {
+  process.loadEnvFile(envFile);
+}
+
 // Directorio y interprete del servicio Python.
 const onepieceDir = path.join(root, 'services/onepiece-service');
 const venvPython = path.join(onepieceDir, '.venv', 'bin', 'python');
