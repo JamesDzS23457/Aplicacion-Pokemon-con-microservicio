@@ -50,10 +50,17 @@ __pycache__/
 
 # Archivos de asistencia IA - NO se suben al repositorio.
 # Son notas de trabajo entre IA y developer, no codigo del proyecto.
+# ".claude/" es la configuracion local de la herramienta, misma categoria.
 AGENTS.md
 CLAUDE.md
 memory.md
 MEMORY.md
+.claude/
+
+# Paquetes de entrega (.zip): son artefactos generados a partir del codigo,
+# no codigo fuente. Se reconstruyen con "git archive". Trackearlos infla el
+# repo y hace que cada entrega arrastre las anteriores.
+*.zip
 
 # typescript
 *.tsbuildinfo
