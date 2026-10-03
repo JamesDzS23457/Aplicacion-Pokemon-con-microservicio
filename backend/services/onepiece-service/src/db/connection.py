@@ -26,6 +26,7 @@
 # ---------------------------------------------------------------------------
 
 import os
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -76,10 +77,82 @@ _cargar_env_local()
 # defecto (util para scripts locales).
 MONGODB_URI = os.environ.get("ONEPIECE_MONGODB_URI") or os.environ.get("MONGODB_URI")
 
-# Falla pronto y con un mensaje claro, en lugar de dejar que pymongo lance un
-# error de conexion mas adelante y mas dificil de entender.
+# Si falta la URI NO se revienta al importar. Este modulo antes hacia
+# `raise RuntimeError` aqui, y como lo importa `src.main`, el proceso moria ANTES
+# de escuchar: Render marcaba el despliegue como fallido en bucle y no dejaba
+# ninguna URL a la que preguntarle nada. La unica pista era el log, que solo
+# decia "falta la variable" sin decir que variables veia.
+#
+# Ahora el servicio arranca igualmente, `/health` responde 503 con el motivo
+# exacto y las rutas de datos devuelven ese mismo motivo. Un despliegue mal
+# configurado se diagnostica con un `curl`, sin depender del panel de Render.
+# El fallo NO se pierde: `get_client()` sigue lanzandolo, solo cambia de momento
+# y de superficie (log + HTTP, en vez de "el deploy fallo").
+ERROR_CONFIGURACION = None
+
 if not MONGODB_URI:
-    raise RuntimeError("Falta ONEPIECE_MONGODB_URI (o MONGODB_URI) en el entorno.")
+    # -----------------------------------------------------------------------
+    # DIAGNOSTICO DEL ARRANQUE
+    #
+    # Este es el error mas comun de este servicio en Render, y con el mensaje
+    # corto ("falta la variable") no hay forma de saber por que: la variable
+    # puede estar mal escrita, puesta en otro servicio, o no guardada. Como no
+    # hay SSH al contenedor, el log de Render es la UNICA pista, asi que antes
+    # de reventar se imprime exactamente que ve el proceso.
+    #
+    # Solo se imprimen NOMBRES de variable, nunca valores: los valores son
+    # credenciales y Render las muestra en pantalla cifradas.
+    # -----------------------------------------------------------------------
+    import difflib  # stdlib; se importa aqui porque solo hace falta al fallar
+
+    esperadas = ("ONEPIECE_MONGODB_URI", "MONGODB_URI")
+    presentes = sorted(os.environ)
+
+    sugerencias = {}
+    for clave in presentes:
+        for esperada in esperadas:
+            # Solo se avisa si el nombre se parece a una variable de Mongo: asi
+            # el aviso sale cuando el nombre esta cerca de verdad, y no por cada
+            # variable del entorno que coincida en alguna letra.
+            if 'mongo' not in clave.lower() and clave not in ('URI', 'URL', 'DATABASE_URL'):
+                continue
+            if clave.upper() == esperada:
+                continue
+            parecidas = difflib.get_close_matches(clave.upper(), esperadas, n=1, cutoff=0.5)
+            if parecidas:
+                sugerencias[parecidas[0]] = clave
+
+    lineas = [
+        '',
+        '=' * 74,
+        '  ONEDIECE: no encuentro la variable de conexion a MongoDB.',
+        '=' * 74,
+        f'  Esperaba una de: {", ".join(esperadas)}',
+        f'  Variables de entorno que VE el proceso ({len(presentes)}):',
+    ]
+    lineas += [f'      {nombre}' for nombre in presentes]
+    if sugerencias:
+        lineas += ['', '  SOSPECHOSO: el nombre se parece al que busco, pero NO coincide:']
+        lineas += [f'      pusiste "{real}"  ->  quizas quisiste decir "{wanted}"'
+                   for wanted, real in sugerencias.items()]
+    lineas += [
+        '',
+        '  En Render, este error casi siempre es uno de estos tres:',
+        '    1. La variable se puso en OTRO servicio (el gateway o pokemon-service',
+        '       no la necesitan; tiene que estar en onepiece-service).',
+        '    2. El nombre esta mal escrito o con guiones bajos de mas.',
+        '    3. Se pulso "Save Changes" pero NO se relanzo el despliegue: Render',
+        '       solo injecta las variables en los procesos NUEVOS.',
+        '=' * 74,
+        '',
+    ]
+    print("\n".join(lineas), file=sys.stderr, flush=True)
+
+    # El servicio NO se detiene aqui: arranca igualmente y lo dice en /health.
+    ERROR_CONFIGURACION = (
+        "Falta ONEPIECE_MONGODB_URI (o MONGODB_URI) en el entorno de Render. "
+        "El log de arranque lista las variables que ve el proceso."
+    )
 
 # Nombre de la base y de la coleccion. En Mongo no hay `schema`, asi que el
 # equivalente de "la tabla characters" es la coleccion con ese nombre dentro de
@@ -96,6 +169,8 @@ def _extraer_host():
     urlsplit entiende "mongodb+srv://..." igual que "postgresql://...", asi que lo
     que se imprime nunca incluye credenciales.
     """
+    if not MONGODB_URI:
+        return "SIN CONFIGURAR"
     try:
         return urlsplit(MONGODB_URI).hostname or "desconocido"
     except Exception:
@@ -112,6 +187,10 @@ _client = None
 async def get_client():
     """Devuelve el cliente de Mongo, creandolo la primera vez (lazy)."""
     global _client
+    if ERROR_CONFIGURACION:
+        # Sin esto, `AsyncMongoClient(None)` fallaria con un error de pymongo
+        # mucho mas dificil de leer que este.
+        raise RuntimeError(ERROR_CONFIGURACION)
     if _client is None:
         _client = AsyncMongoClient(
             MONGODB_URI,

@@ -40,7 +40,24 @@ async def lifespan(_app):
     """Arranque y parada del servicio (sustituye a los eventos on_event)."""
     # 1. Indices antes de escuchar. Es idempotente, asi que arrancar varias
     #    veces no rompe nada.
-    await connection.ensure_indexes()
+    #
+    #    Pero si falta la URI de Mongo NO se aborta el arranque. Antes este await
+    #    propagaba el RuntimeError de connection.py, el proceso moria sin
+    #    escuchar y Render no daba ninguna URL: el despliegue fallaba en bucle
+    #    sin forma de consultarlo. Ahora el el servicio levanta en modo degradado,
+    #    `/health` devuelve 503 con el motivo exacto y las rutas de datos
+    #    devuelven ese mismo motivo, que se puede leer con un curl.
+    #
+    #    `ensure_indexes` tambien puede fallar por la RED (Atlas dormido, IP
+    #    bloqueada en la Network Access List). Es el mismo caso: es preferible
+    #    un servicio que responde "no puedo leer la base" a uno que no existe.
+    if connection.ERROR_CONFIGURACION:
+        log(f"ARRANQUE DEGRADADO: {connection.ERROR_CONFIGURACION}")
+    else:
+        try:
+            await connection.ensure_indexes()
+        except Exception as exc:  # noqa: BLE001 - se registra y se sigue
+            log(f"AVISO: no se pudieron crear/verificar los indices: {exc}")
     puerto = os.environ.get("PORT", "4002")
     # Se imprime el entorno y CONTRA QUE BASE se habla (el host, nunca las
     # credenciales). Es lo primero que se mira si una busqueda "no encuentra
@@ -97,8 +114,24 @@ async def generic_error_handler(_request: Request, exc: Exception):
     El detalle se registra completo en el log, pero al cliente se le devuelve un
     mensaje generico para no filtrar informacion interna. Mismo criterio que el
     middleware de errores de Express.
+
+    EXCEPCION: si lo que falla es la CONFIGURACION (falta
+    `ONEPIECE_MONGODB_URI`), si se devuelve el motivo. Ese error no contiene
+    informacion interna: es un texto que el propio servicio escribio sobre sus
+    propias variables de entorno, ycallarlo "error interno" solo obliga a ir a
+    mirar el log de Render. Un despliegue mal configurado tiene que poder
+    diagnosticarse desde fuera.
     """
     log(f"500: {exc}")
+    if connection.ERROR_CONFIGURACION:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "service": "onepiece-service",
+                "error": connection.ERROR_CONFIGURACION,
+            },
+        )
     return JSONResponse(status_code=500, content={"error": "Error interno del servidor"})
 
 
@@ -107,14 +140,52 @@ async def generic_error_handler(_request: Request, exc: Exception):
     response_model=HealthResponse,
     tags=["Salud"],
     summary="Estado del servicio",
-    description="Comprueba que el servicio responde y cuantos personajes hay en la base.",
+    description=(
+        "Comprueba que el servicio responde y cuantos personajes hay en la base. "
+        "Devuelve **503** con el motivo exacto cuando la configuracion esta mal "
+        "o la base de datos no responde: este es el endpoint de diagnostico en "
+        "produccion, porque el servicio sigue vivo aunque la base no lo este."
+    ),
 )
 async def health():
     # Incluye el conteo porque un servicio que responde pero tiene 0 personajes
     # es un servicio "sano pero inservible", y conviene poder detectarlo.
     # El conteo sale del repository, no de una consulta escrita aqui: la base
     # solo se toca desde repositories/.
-    return {"status": "ok", "service": "onepiece-service", "characters": await repo.count()}
+    #
+    # ESTE ES EL ENDPOINT DE DIAGNOSTICO EN PRODUCCION. Si el despliegue esta mal
+    # configurado (falta ONEPIECE_MONGODB_URI) o Atlas no deja entrar, este es el
+    # unico sitio donde se puede leer el motivo desde fuera: el servicio esta
+    # vivo y `/health` responde 503 con la causa exacta. Antes, en ese mismo
+    # caso, el proceso moria al importar y no habia ninguna URL que consultar.
+    if connection.ERROR_CONFIGURACION:
+        log(f"503: {connection.ERROR_CONFIGURACION}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "service": "onepiece-service",
+                "error": connection.ERROR_CONFIGURACION,
+            },
+        )
+
+    try:
+        personajes = await repo.count()
+    except Exception as exc:  # noqa: BLE001 - aqui el motivo SI es util
+        # A diferencia del resto de errores, aqui se devuelve el detalle: un
+        # despliegue roto no se puede arreglar leyendo la excepcion de pymongo
+        # en un panel, y este endpoint existe justo para eso.
+        log(f"503: la base de datos no responde: {exc}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "service": "onepiece-service",
+                "error": f"La base de datos no responde: {exc}",
+            },
+        )
+
+    return {"status": "ok", "service": "onepiece-service", "characters": personajes}
 
 
 app.include_router(characters_router.router)
