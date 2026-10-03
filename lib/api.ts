@@ -42,3 +42,40 @@ log(
       : 'microservicios DESPLEGADOS en Render') +
     ')',
 );
+
+// ---------------------------------------------------------------------------
+// AVISO DE ARRANQUE EN FRIO
+//
+// Los servicios estan en el plan gratuito de Render, que los suspende cuando
+// pasan unos 15 minutos sin trafico. La primera consulta despues de ese rato
+// despierta el servicio y puede tardar hasta un minuto (o fallar una vez con
+// 503) antes de responder. Ese NO es un fallo del usuario ni del codigo, asi
+// que conviene explicarlo en lugar de mostrar un error rojo generico.
+//
+// Se centraliza aqui porque las dos busquedas (Pokemon y One Piece) deben dar
+// exactamente el mismo aviso; duplicarlo en cada contexto los desincronizaria.
+// ---------------------------------------------------------------------------
+
+/** Texto que se muestra cuando el fallo se debe al arranque en frio. */
+export const MENSAJE_ARRANQUE_FRIO =
+  'Los microservicios estan en arranque en frio: el plan gratuito los suspende ' +
+  'cuando pasan un rato sin usarse. Espera unos segundos y vuelve a buscar.';
+
+/**
+ * Decide si un fallo se debe al arranque en frio.
+ *
+ * Senales: el gateway responde 503 (no logro despertar al microservicio a
+ * tiempo) o el texto del error es uno de los que produce durante el arranque.
+ * Un fallo real (404 "no encontrado", 400 "falta el nombre") NO cae aqui: esos
+ * deben seguir mostrandose como error para que el usuario corrija la busqueda.
+ */
+export function esArranqueFrio(estado: number, mensaje: string): boolean {
+  if (estado === 503) return true;
+  const texto = (mensaje || '').toLowerCase();
+  return (
+    texto.includes('microservicio no disponible') ||
+    (texto.includes('tard') && texto.includes('demasiado')) ||
+    texto.includes('respuesta invalida') ||
+    texto.includes('respuesta inválida')
+  );
+}

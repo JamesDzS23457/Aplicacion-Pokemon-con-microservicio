@@ -1,5 +1,5 @@
 import { createContext, PropsWithChildren, useContext, useState } from 'react';
-import { API_URL, log } from '../lib/api';
+import { API_URL, log, esArranqueFrio, MENSAJE_ARRANQUE_FRIO } from '../lib/api';
 
 export type Pokemon = {
   id: number;
@@ -17,6 +17,8 @@ type PokemonContextValue = {
   pokemon: Pokemon | null;
   cargando: boolean;
   mensaje: string;
+  /** 'info' para el aviso de arranque en frio; 'error' para fallos reales. */
+  tono: 'error' | 'info';
   buscarPokemon: (nombre: string) => Promise<void>;
 };
 
@@ -26,17 +28,20 @@ export function PokemonProvider({ children }: PropsWithChildren) {
   const [pokemon, setPokemon] = useState<Pokemon | null>(null);
   const [cargando, setCargando] = useState(false);
   const [mensaje, setMensaje] = useState('');
+  const [tono, setTono] = useState<'error' | 'info'>('error');
 
   const buscarPokemon = async (nombre: string) => {
     const normalizedName = nombre.trim().toLowerCase();
     if (!normalizedName) {
       setPokemon(null);
+      setTono('error');
       setMensaje('Escribe el nombre de un Pokemon.');
       return;
     }
 
     setCargando(true);
     setMensaje('');
+    setTono('error');
     // Instante de inicio para medir la duracion. En el plan free de Render la
     // primera busqueda puede tardar ~1 minuto (el servicio estaba dormido).
     const inicio = Date.now();
@@ -68,13 +73,24 @@ export function PokemonProvider({ children }: PropsWithChildren) {
       const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar el servicio.';
       log(`  ${estado || 'sin respuesta'} en ${Date.now() - inicio}ms: ${mensajeError}`);
       setPokemon(null);
-      setMensaje(mensajeError);
+      // El arranque en frio no es culpa del usuario: se muestra como aviso
+      // informativo, con un texto que explica que hay que reintentar.
+      if (esArranqueFrio(estado, mensajeError)) {
+        setTono('info');
+        setMensaje(MENSAJE_ARRANQUE_FRIO);
+      } else {
+        setTono('error');
+        // Si `estado` sigue en 0 el navegador no recibio ni un codigo HTTP: la
+        // peticion no llego al gateway (sin red, CORS...). Se muestra un texto
+        // en espanol en lugar del "Failed to fetch" en ingles del navegador.
+        setMensaje(estado === 0 ? 'No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.' : mensajeError);
+      }
     } finally {
       setCargando(false);
     }
   };
 
-  return <PokemonContext.Provider value={{ pokemon, cargando, mensaje, buscarPokemon }}>{children}</PokemonContext.Provider>;
+  return <PokemonContext.Provider value={{ pokemon, cargando, mensaje, tono, buscarPokemon }}>{children}</PokemonContext.Provider>;
 }
 
 export function usePokemon() {

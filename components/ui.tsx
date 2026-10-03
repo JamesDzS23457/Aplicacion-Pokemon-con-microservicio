@@ -241,7 +241,18 @@ export function LoadingCard({ accent, label }: { accent: string; label: string }
     <View style={styles.loadingCard}>
       <ActivityIndicator size="large" color={accent} />
       <Text style={styles.loadingLabel}>{label}</Text>
-      <Text style={styles.loadingHint}>Si el servicio estaba dormido puede tardar un poco.</Text>
+      {/* Aviso destacado de arranque en frio: no es un adorno, explica por que
+          la primera busqueda puede tardar. Sin esto el usuario cree que la app
+          se colgo (o que el trabajo se "dano") cuando en realidad el plan
+          gratuito de Render esta despertando el servicio. */}
+      <View style={styles.coldStart}>
+        <Ionicons name="time-outline" size={20} color={accent} />
+        <Text style={styles.coldStartText}>
+          Arranque en frio: los microservicios se suspenden cuando pasan un rato sin
+          usarse. La primera consulta puede tardar hasta un minuto; espera sin cerrar
+          la pantalla y volvera sola.
+        </Text>
+      </View>
     </View>
   );
 }
@@ -447,11 +458,23 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: spacing.lg,
   },
-  loadingHint: {
-    color: colors.textFaint,
-    fontSize: type.small,
-    textAlign: 'center',
-    marginTop: spacing.sm,
+  coldStart: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    marginTop: spacing.xl,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  coldStartText: {
+    flex: 1,
+    color: colors.textSoft,
+    fontSize: type.small + 1,
+    lineHeight: 18,
   },
 
   pill: {

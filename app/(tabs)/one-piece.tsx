@@ -53,7 +53,7 @@ function fruitColor(type?: string) {
 
 export default function OnePieceScreen() {
   const [nombre, setNombre] = useState('Monkey D Luffy');
-  const { character, cargando, mensaje, buscarPersonaje } = useOnePiece();
+  const { character, cargando, mensaje, tono, buscarPersonaje } = useOnePiece();
   const buscar = () => buscarPersonaje(nombre);
 
   return (
@@ -81,7 +81,7 @@ export default function OnePieceScreen() {
           loading={cargando}
         />
 
-        {mensaje ? <Notice text={mensaje} /> : null}
+        {mensaje ? <Notice text={mensaje} tone={tono} /> : null}
 
         {cargando ? <LoadingCard accent={colors.onepiece} label="Buscando personaje..." /> : null}
 

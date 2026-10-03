@@ -28,7 +28,7 @@ import { colors, pokemonTypeColors, radius, shadows, spacing } from '../../lib/t
 
 export default function HomeScreen() {
   const [nombre, setNombre] = useState('');
-  const { pokemon, cargando, mensaje, buscarPokemon } = usePokemon();
+  const { pokemon, cargando, mensaje, tono, buscarPokemon } = usePokemon();
   const buscar = () => buscarPokemon(nombre);
   const tipos = (pokemon?.types?.map((t) => t.type?.name).filter(Boolean) as string[]) ?? [];
 
@@ -57,7 +57,7 @@ export default function HomeScreen() {
           loading={cargando}
         />
 
-        {mensaje ? <Notice text={mensaje} /> : null}
+        {mensaje ? <Notice text={mensaje} tone={tono} /> : null}
 
         {cargando ? <LoadingCard accent={colors.pokemon} label="Buscando Pokemon..." /> : null}
 

@@ -1,5 +1,5 @@
 import { createContext, PropsWithChildren, useContext, useState } from 'react';
-import { API_URL, log } from '../lib/api';
+import { API_URL, log, esArranqueFrio, MENSAJE_ARRANQUE_FRIO } from '../lib/api';
 
 export type OnePieceCharacter = {
   id: number;
@@ -20,6 +20,8 @@ type OnePieceContextValue = {
   character: OnePieceCharacter | null;
   cargando: boolean;
   mensaje: string;
+  /** 'info' para el aviso de arranque en frio; 'error' para fallos reales. */
+  tono: 'error' | 'info';
   buscarPersonaje: (nombre: string) => Promise<void>;
 };
 
@@ -29,15 +31,18 @@ export function OnePieceProvider({ children }: PropsWithChildren) {
   const [character, setCharacter] = useState<OnePieceCharacter | null>(null);
   const [cargando, setCargando] = useState(false);
   const [mensaje, setMensaje] = useState('');
+  const [tono, setTono] = useState<'error' | 'info'>('error');
 
   const buscarPersonaje = async (nombre: string) => {
     if (!nombre.trim()) {
       setCharacter(null);
+      setTono('error');
       setMensaje('Escribe el nombre de un personaje.');
       return;
     }
     setCargando(true);
     setMensaje('');
+    setTono('error');
     // Mismo patron que PokemonContext: medir y registrar cada busqueda. El
     // nombre se envia tal cual (sin lower) porque el microservicio es quien
     // normaliza; aqui se registra para ver exactamente que viajo por la red.
@@ -66,13 +71,23 @@ export function OnePieceProvider({ children }: PropsWithChildren) {
       const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar One Piece.';
       log(`  ${estado || 'sin respuesta'} en ${Date.now() - inicio}ms: ${mensajeError}`);
       setCharacter(null);
-      setMensaje(mensajeError);
+      // Igual que en Pokemon: el arranque en frio se muestra como aviso, no
+      // como error rojo, porque reintentar soluciona.
+      if (esArranqueFrio(estado, mensajeError)) {
+        setTono('info');
+        setMensaje(MENSAJE_ARRANQUE_FRIO);
+      } else {
+        setTono('error');
+        // Igual que en Pokemon: se evita el "Failed to fetch" en ingles cuando
+        // el navegador no recibio siquiera un codigo HTTP.
+        setMensaje(estado === 0 ? 'No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.' : mensajeError);
+      }
     } finally {
       setCargando(false);
     }
   };
 
-  return <OnePieceContext.Provider value={{ character, cargando, mensaje, buscarPersonaje }}>{children}</OnePieceContext.Provider>;
+  return <OnePieceContext.Provider value={{ character, cargando, mensaje, tono, buscarPersonaje }}>{children}</OnePieceContext.Provider>;
 }
 
 export function useOnePiece() {
