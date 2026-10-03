@@ -57,7 +57,10 @@ async def lifespan(_app):
         try:
             await connection.ensure_indexes()
         except Exception as exc:  # noqa: BLE001 - se registra y se sigue
-            log(f"AVISO: no se pudieron crear/verificar los indices: {exc}")
+            # Traducido tambien en el log: el de arranque es el primero que se
+            # lee cuando algo va mal, y un TopologyDescription de 900
+            # caracteres esconde el motivo real.
+            log(f"AVISO: la base no responde todavia: {connection.diagnosticar_error(exc)}")
     puerto = os.environ.get("PORT", "4002")
     # Se imprime el entorno y CONTRA QUE BASE se habla (el host, nunca las
     # credenciales). Es lo primero que se mira si una busqueda "no encuentra
@@ -172,16 +175,23 @@ async def health():
     try:
         personajes = await repo.count()
     except Exception as exc:  # noqa: BLE001 - aqui el motivo SI es util
-        # A diferencia del resto de errores, aqui se devuelve el detalle: un
-        # despliegue roto no se puede arreglar leyendo la excepcion de pymongo
-        # en un panel, y este endpoint existe justo para eso.
-        log(f"503: la base de datos no responde: {exc}")
+        # A diferencia del resto de errores, aqui se devuelve el motivo. Y se
+        # devuelve YA TRADUCIDO: la excepcion de pymongo para un fallo de Atlas
+        # son ~900 caracteres de TopologyDescription con los tres shards, de los
+        # que hay que extraer mentalmente una sola conclusion. `diagnosticar_error`
+        # la deja en un texto corto que dice que hacer.
+        #
+        # Sin este endpoint un despliegue roto no se puede diagnosticar: el
+        # servicio estaba vivo pero sin base, asi que no hay error de despliegue
+        # que se vea en el panel, solo un 503 en cada peticion de la app.
+        motivo = connection.diagnosticar_error(exc)
+        log(f"503: {motivo}")
         return JSONResponse(
             status_code=503,
             content={
                 "status": "error",
                 "service": "onepiece-service",
-                "error": f"La base de datos no responde: {exc}",
+                "error": motivo,
             },
         )
 

@@ -90,6 +90,72 @@ MONGODB_URI = os.environ.get("ONEPIECE_MONGODB_URI") or os.environ.get("MONGODB_
 # y de superficie (log + HTTP, en vez de "el deploy fallo").
 ERROR_CONFIGURACION = None
 
+
+# ---------------------------------------------------------------------------
+# DIAGNOSTICO DE UN ATLAS QUE RECHAZA LA CONEXION
+# ---------------------------------------------------------------------------
+# El sintoma clasico de Atlas es `SSL handshake failed: ... [SSL:
+# TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error`, y es muy engañoso por
+# dos motivos: lo MANDA EL SERVIDOR (durante el TLS) y el nombre no tiene nada
+# que ver con la causa. No es "el certificado esta mal" ni "el codigo esta mal":
+# con la misma URI y desde otra maquina la misma pila conecta sin problema.
+#
+# La causa real, casi siempre, es una de estas dos:
+#
+#   1. LA IP NO ESTA EN LA NETWORK ACCESS LIST de Atlas. El filtrado por IP se
+#      aplica al ESTABLECER la conexion, ANTES de autenticar, asi que Atlas
+#      corta el TLS y el driver solo puede reportar un alert. Y Render no tiene
+#      IP de salida fija, de modo que cualquier lista que no incluya
+#      `0.0.0.0/0` lo deja fuera en algun despliegue.
+#   2. La contrasena esta mal. Atlas responde tambien con alert de TLS en ese
+#      caso, lo cual hace que los dos fallos sean indistinguibles por el error.
+#
+# Por eso este helper NO intenta adivinar: dice las dos posibilidades y como
+# distinguirlas en un paso, en vez de repetir un error de 800 caracteres que no
+# lleva a ninguna parte.
+# ---------------------------------------------------------------------------
+PISTAS_ATLAS_TLS = (
+    "Atlas ha rechazado la conexion ANTES de autenticar, asi que el alert de TLS "
+    "no habla de certificados ni del codigo. Las dos causas posibles son:\n"
+    "  a) La IP de salida NO esta en la Network Access List de Atlas. Es lo mas "
+    "probable: el filtrado por IP ocurre al establecer la conexion, antes del "
+    "TLS, y Render NO tiene IP de salida fija. Solucion: en Atlas > Network "
+    "Access List, anade '0.0.0.0/0' (Allow access from anywhere) o quita la "
+    "restriccion.\n"
+    "  b) La contrasena de la URI no es la del usuario. Atlas tambien corta el "
+    "TLS en ese caso. Se distingue en un paso: la cadena del error trae "
+    "'bad auth' si la contrasena falla de verdad; si solo dice 'tlsv1 alert', "
+    "es la lista de IPs."
+)
+
+
+def diagnosticar_error(exc) -> str:
+    """Convierte una excepcion de pymongo en un mensaje corto y accionable.
+
+    Sin esto, `/health` devuelve la exception entera del driver: cuatro lineas
+    de TopologyDescription con los tres shards y sus RTT, unos 900 caracteres
+    que hay que leer a ojo para sacar una sola conclusion.
+    """
+    texto = str(exc)
+    if "TLSV1_ALERT" in texto or "SSL handshake failed" in texto:
+        # Los shards no aportan nada aqui y son lo que hace el mensaje ilegible.
+        return PISTAS_ATLAS_TLS
+    if "bad auth" in texto or "Authentication failed" in texto:
+        return (
+            "Atlas rechazo la contrasena de la URI (bad auth). El usuario de la "
+            "cadena mongodb+srv:// no es el del proyecto del clustro, o la "
+            "contrasena no es la suya."
+        )
+    if "ServerSelectionTimeoutError" in texto or "timed out" in texto:
+        return (
+            "Atlas no respondio a tiempo. Suele ser lo mismo que la lista de IPs "
+            "(ver PISTAS_ATLAS_TLS), o un clustro M0 dormido que tarda en despertar."
+        )
+    # Cualquier otro error se devuelve entero: si no es un caso conocido, callar
+    # la mitad de la informacion seria peor que verboso.
+    return texto
+
+
 if not MONGODB_URI:
     # -----------------------------------------------------------------------
     # DIAGNOSTICO DEL ARRANQUE
