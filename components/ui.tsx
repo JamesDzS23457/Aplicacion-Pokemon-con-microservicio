@@ -249,8 +249,8 @@ export function LoadingCard({ accent, label }: { accent: string; label: string }
         <Ionicons name="time-outline" size={20} color={accent} />
         <Text style={styles.coldStartText}>
           Arranque en frio: los microservicios se suspenden cuando pasan un rato sin
-          usarse. La primera consulta puede tardar hasta un minuto; espera sin cerrar
-          la pantalla y volvera sola.
+          usarse. La primera consulta puede tardar hasta un minuto; no cierres la
+          pantalla mientras responde.
         </Text>
       </View>
     </View>
