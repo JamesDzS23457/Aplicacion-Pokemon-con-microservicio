@@ -4,6 +4,9 @@ Aplicación web Expo (SDK 57) con Pokédex y buscador de personajes de One Piece
 Los datos se sirven desde **microservicios propios** backed por **PostgreSQL en
 Supabase**, que se cargaron una vez desde las APIs públicas de PokéAPI y One Piece.
 
+Cada microservicio está en un lenguaje distinto: **Pokémon en Node.js/Express** y
+**One Piece en Python/FastAPI**. Los dos publican su documentación **Swagger**.
+
 ## Arquitectura
 
 ```
@@ -21,7 +24,8 @@ Supabase**, que se cargaron una vez desde las APIs públicas de PokéAPI y One P
         ▼              ▼
 ┌──────────────┐  ┌──────────────┐
 │ pokemon-svc  │  │ onepiece-svc │  procesos independientes,
-│    :4001     │  │    :4002     │  desplegables por separado
+│ Node.js      │  │ Python       │  desplegables por separado
+│    :4001     │  │    :4002     │  cada uno con su /docs (Swagger)
 └──────┬───────┘  └──────┬───────┘
        │                 │
        ▼                 ▼
@@ -45,13 +49,25 @@ Supabase**, que se cargaron una vez desde las APIs públicas de PokéAPI y One P
 
 Tras correr el seed, el sistema **funciona sin internet**.
 
+## Documentación Swagger
+
+Cada microservicio se documenta solo (es un requisito del trabajo):
+
+| Servicio | Swagger UI | Contrato OpenAPI |
+|---|---|---|
+| Pokémon (Node) | `/docs` | `/openapi.json` |
+| One Piece (Python) | `/docs` y `/redoc` | `/openapi.json` |
+
+En local: <http://localhost:4001/docs> y <http://localhost:4002/docs>. En
+producción, la misma ruta sobre el subdominio del servicio en Render.
+
 ## Puesta en marcha
 
 ```bash
 # 1. Copia la configuración y rellena las URLs de Supabase
 cp .env.example .env
 
-# 2. Instala dependencias del backend y carga los 20+20 registros
+# 2. Instala dependencias (incluye el entorno virtual de Python) y carga 20+20
 npm run backend:setup
 
 # 3. Levanta gateway + los 2 microservicios
@@ -61,13 +77,20 @@ npm run backend
 npm start          # o: npm run web
 ```
 
+`backend:setup` crea el entorno virtual del servicio Python en
+`backend/services/onepiece-service/.venv`. Si prefieres crearlo por separado:
+`npm run backend:onepiece:env`.
+
 ### Comandos
 
 | Comando | Qué hace |
 |---|---|
-| `npm run backend:setup` | Instala los 3 paquetes y corre el seed |
+| `npm run backend:setup` | Instala los 3 paquetes + el venv Python y corre el seed |
 | `npm run backend` | Levanta los 3 procesos con logs coloreados |
+| `npm run backend:onepiece:env` | Solo crea/actualiza el entorno virtual de Python |
 | `npm run backend:seed` | Recarga los 20 personajes y 20 Pokémon (requiere internet) |
+| `npm run backend:seed:pokemon` | Solo el seed de Pokémon (Node) |
+| `npm run backend:seed:onepiece` | Solo el seed de One Piece (Python) |
 | `npm run backend:datos` | Regenera `DATOS.md` consultando el gateway |
 | `npm run backend:verify` | Comprueba la BD, la búsqueda y el límite de 20 |
 | `npm run backend:offline-test` | Levanta el backend SIN red y comprueba que responde |
@@ -104,6 +127,9 @@ Y en `.env`: `DATABASE_SSL=false` (un Postgres local no tiene SSL).
 | `POST` | `/api/pokemon/search` | `{ "name": "pikachu" }` |
 | `GET` | `/api/pokemon` | lista los 20 |
 | `GET` | `/api/pokemon/:id` | — |
+
+La documentación interactiva de cada microservicio está en su `/docs` (ver
+[Documentación Swagger](#documentación-swagger)).
 
 La búsqueda es **tolerante**: normaliza el texto (minúsculas, sin acentos, sin
 puntuación) antes de comparar. Así `luffy`, `LUFFY`, `tony tony chopper` y
@@ -153,22 +179,27 @@ quiere ver sin mirar logs.
 
 ```
 backend/
-├── gateway/src/{index,config,proxy}.js + routes/
+├── gateway/src/{index,config,proxy}.js + routes/     (Node)
 ├── services/
-│   ├── pokemon-service/src/{db,repositories,services,routes,external,lib}/
-│   └── onepiece-service/src/{db,repositories,services,routes,external,lib}/
-└── scripts/{seed,seed-characters,seed-pokemon,generate-datos,verify,dev}.js
+│   ├── pokemon-service/                              (Node + Express)
+│   │   └── src/{db,repositories,services,routes,external,lib}/ + swagger.js
+│   └── onepiece-service/                             (Python + FastAPI)
+│       ├── src/{db,repositories,services,routers,external,lib}/ + main.py
+│       ├── requirements.txt
+│       └── seed.py
+└── scripts/{seed,seed-pokemon,generate-datos,verify,dev}.js + onepiece-env.sh
 ```
 
 | Capa | Responsabilidad |
 |---|---|
-| `routes/` | HTTP. Traduce request/response. Sin lógica. |
+| `routes/` (Node) · `routers/` (Python) | HTTP. Traduce request/response. Sin lógica. |
 | `services/` | Reglas de negocio y validaciones. Sin SQL. |
 | `repositories/` | **Todo el SQL vive aquí.** |
-| `external/` | **Única capa que hace `fetch` a internet.** |
+| `external/` | **Única capa que hace peticiones a internet.** |
 
 Aislar el SQL en `repositories/` es lo que permitió cambiar de SQLite a
-PostgreSQL sin tocar el resto del sistema.
+PostgreSQL y, después, reescribir el servicio de One Piece de Node a Python sin
+tocar el resto del sistema.
 
 ## Interfaz
 
@@ -192,6 +223,14 @@ render blueprint launch
 
 `render.yaml` define los 3 servicios. Las URLs de base de datos se configuran
 en el dashboard de Render (`sync: false` evita que aparezcan en los logs).
+
+El microservicio de One Piece declara `runtime: python` (el único que no es
+Node) y fija `PYTHON_VERSION=3.12.7`: es una versión con ruedas precompiladas de
+`asyncpg`/`uvloop`, así que el `pip install` del build es rápido y fiable. Si
+cambias el `runtime` de un servicio que ya existe en Render, hay que **borrarlo
+y crearlo de nuevo** (Render no cambia el runtime de un servicio en caliente);
+el nombre debe seguir siendo `onepiece-service` para que el gateway lo resuelva
+por `fromService`.
 
 Al usar una base de datos gestionada y no un archivo en disco, **el backend ya
 no depende del sistema de archivos del servidor**: funciona en Render, Railway,
@@ -256,17 +295,20 @@ está roto.
 ## Notas sobre los datos
 
 - **`race` (raza)** no existe en la API de One Piece. Es un mapa curado a mano
-  en `external/raceMap.js`; los personajes fuera del mapa devuelven `"Humano"`
+  en `external/race_map.py`; los personajes fuera del mapa devuelven `"Humano"`
   con `raceEstimated: true`.
 - **`genero`** de Pokémon se deduce del *gender rate* de la especie
   (probabilidad), no del género real. No existe endpoint que lo devuelva.
 - **Imágenes de One Piece**: se resuelven **solo en el seed** consultando el
-  índice de personajes de **Jikan (MyAnimeList)** en `external/jikan.client.js`,
+  índice de personajes de **Jikan (MyAnimeList)** en `external/jikan_client.py`,
   y la URL del retrato se guarda en `image_url`. Wikipedia (`429` sistemático) y
   el CDN de Fandom (bloqueo de Cloudflare) quedaron descartados. En el flujo
-  normal de búsqueda el backend nunca sale a internet.
+  normal de búsqueda el backend nunca sale a internet. Jikan falla de vez en
+  cuando (devuelve `504` porque no logra conectar con MyAnimeList); si eso pasa
+  durante el seed, `COALESCE` **conserva la imagen que ya estaba guardada** en
+  vez de borrarla.
 - Los datos de One Piece vienen mezclados en **francés e inglés** (`"19 ans"`,
   `"vivant"`, `"Captain"`). Se traducen **en el seed** con el mapa curado
-  `lib/translations.js`, así que la base de datos, la API y la app ya guardan y
+  `lib/translations.py`, así que la base de datos, la API y la app ya guardan y
   muestran español. Las descripciones largas de las frutas se dejaron en su
   idioma original porque no se muestran en las pantallas principales.

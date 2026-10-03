@@ -3,14 +3,21 @@
 //
 // Mismo patron que onepiece-service. Ver el comentario ahi para el orden de
 // arranque (esquema antes de listen) y para el middleware de errores.
+//
+// Ademas, este servicio expone su documentacion:
+//   GET /docs         -> Swagger UI (interfaz para probar la API)
+//   GET /openapi.json -> el contrato OpenAPI en bruto
+// Es un requisito del trabajo documentar el microservicio.
 // ---------------------------------------------------------------------------
 
 import express from 'express';
 import cors from 'cors';
+import swaggerUi from 'swagger-ui-express';
 import pokemonRoutes from './routes/pokemon.routes.js';
 import { ensureSchema, DB_HOST } from './db/connection.js';
 import * as repo from './repositories/pokemon.repository.js';
 import { crearLog, ENTORNO } from './lib/log.js';
+import { swaggerSpec } from './swagger.js';
 
 const app = express();
 const log = crearLog('pokemon-service');
@@ -18,7 +25,27 @@ const log = crearLog('pokemon-service');
 app.use(cors());
 app.use(express.json({ limit: '10kb' }));
 
-/** Healthcheck. Si la BD esta caida, responde 500 en vez de decir "ok". */
+/**
+ * @openapi
+ * /health:
+ *   get:
+ *     tags: [Salud]
+ *     summary: Estado del servicio
+ *     description: Comprueba que el servicio responde y cuantos Pokemon hay en la base.
+ *     responses:
+ *       200:
+ *         description: Servicio vivo.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status: { type: string, example: ok }
+ *                 service: { type: string, example: pokemon-service }
+ *                 pokemons: { type: integer, example: 20 }
+ *       500:
+ *         description: La base de datos no responde.
+ */
 app.get('/health', async (_req, res, next) => {
   try {
     const total = await repo.count();
@@ -27,6 +54,15 @@ app.get('/health', async (_req, res, next) => {
     next(error);
   }
 });
+
+// Documentacion. Se monta ANTES de las rutas de negocio porque /docs y
+// /openapi.json son rutas propias del servicio, no del recurso Pokemon.
+// /openapi.json se expone aparte porque alguna herramienta (y el propio
+// Swagger UI) consume el contrato en bruto.
+app.get('/openapi.json', (_req, res) => {
+  res.json(swaggerSpec);
+});
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { customSiteTitle: 'Pokemon API' }));
 
 app.use('/api/pokemon', pokemonRoutes);
 
@@ -51,6 +87,7 @@ try {
     // encuentra nada": si ENTORNO=LOCAL, estas consultando tu Postgres local,
     // no Supabase.
     log(`ENTORNO=${ENTORNO} | BD=${DB_HOST} | escuchando en :${PORT}`);
+    log(`documentacion en http://localhost:${PORT}/docs`);
   });
 } catch (error) {
   log(`no se pudo iniciar: ${error.message}`);

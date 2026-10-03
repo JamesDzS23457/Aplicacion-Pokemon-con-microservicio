@@ -6,11 +6,13 @@
   "scripts": {
     "gateway": "node gateway/src/index.js",
     "pokemon": "node services/pokemon-service/src/index.js",
-    "onepiece": "node services/onepiece-service/src/index.js",
+    "onepiece": "cd services/onepiece-service && .venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 4002",
+    "onepiece:env": "bash scripts/onepiece-env.sh",
     "seed": "node scripts/seed.js",
+    "seed:onepiece": "cd services/onepiece-service && .venv/bin/python seed.py",
     "verify": "node scripts/verify.js",
     "offline-test": "bash scripts/test-offline.sh",
-    "setup": "npm install --prefix gateway && npm install --prefix services/pokemon-service && npm install --prefix services/onepiece-service && node scripts/seed.js",
+    "setup": "npm install --prefix gateway && npm install --prefix services/pokemon-service && npm run onepiece:env && node scripts/seed.js && cd services/onepiece-service && .venv/bin/python seed.py",
     "dev": "node scripts/dev.js"
   }
 }

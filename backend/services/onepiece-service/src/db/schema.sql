@@ -1,7 +1,8 @@
 -- Esquema de la base de datos de One Piece (PostgreSQL).
 --
--- Se aplica UNA vez con:  node scripts/db-setup.js
--- Usa IF NOT EXISTS en todo para que se pueda volver a ejecutar sin romper nada.
+-- Lo aplica el propio servicio (y el seed) al arrancar, leyendo este archivo
+-- desde src/db/connection.py. Usa IF NOT EXISTS en todo para que se pueda
+-- volver a ejecutar sin romper nada.
 --
 -- CONVENCION: cada fila se identifica con el id que da la API externa, y el
 -- seed hace upsert sobre ese id. Las columnas que derivamos del texto

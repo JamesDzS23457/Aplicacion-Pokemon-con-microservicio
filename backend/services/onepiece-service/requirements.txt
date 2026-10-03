@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# DEPENDENCIAS DEL MICROSERVICIO DE ONE PIECE  (Python + FastAPI)
+#
+# Por que rangos (>=) y no versiones fijas:
+# El servicio se instala en dos sitios distintos (tu maquina, con el Python que
+# tengas, y Render). Un rango deja que pip elija la version que SI tenga rueda
+# precompilada para ese Python, en vez de fallar porque una version exacta no
+# publico binario para la version del interprete.
+#
+# fastapi    -> el framework HTTP. Su mayor ventaja aqui es que genera la
+#               documentacion OpenAPI/Swagger sola, que es un requisito.
+# uvicorn    -> el servidor ASGI que ejecuta la app. [standard] trae el
+#               recargado en caliente y el soporte de websockets.
+# asyncpg    -> driver de PostgreSQL ASINCRONO. Se eligio asyncpg y no psycopg
+#               porque FastAPI es async: psycopg sincrono bloquearia el event
+#               loop y el servicio atenderia una peticion a la vez.
+# httpx      -> cliente HTTP asincrono. Lo usa SOLO el seed (carpeta
+#               external/), nunca el servicio en tiempo de peticion.
+# ---------------------------------------------------------------------------
+fastapi>=0.115
+uvicorn[standard]>=0.30
+asyncpg>=0.30
+httpx>=0.27

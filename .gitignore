@@ -41,6 +41,13 @@ backend/**/node_modules/
 *.db-wal
 *.db-shm
 
+# Python (microservicio de One Piece)
+# El entorno virtual y la cache de bytecode son artefactos locales: se recrean
+# con "npm run backend:setup". No se suben al repositorio.
+backend/services/onepiece-service/.venv/
+__pycache__/
+*.pyc
+
 # Archivos de asistencia IA - NO se suben al repositorio.
 # Son notas de trabajo entre IA y developer, no codigo del proyecto.
 AGENTS.md

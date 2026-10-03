@@ -2,7 +2,7 @@
 // NORMALIZACION DE NOMBRES (Pokemon)
 //
 // Mismo criterio que onepiece-service. DEBE mantenerse en sincronía entre los
-// dos servicios. El bug de raceMap se debio a NO usar esta normalizacion.
+// dos servicios. El bug del mapa de razas se debio a NO usar esta normalizacion.
 //
 // Regla: minusculas, sin acentos, sin puntuacion, sin la parte tras '/'
 // (por si algun nombre de API tuviera alias). Sirve para que 'Pikachu',

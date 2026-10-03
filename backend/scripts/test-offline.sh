@@ -3,23 +3,32 @@
 # PRUEBA DE AISLAMIENTO
 #
 # Levanta el backend con las llamadas a internet BLOQUEADAS y comprueba que
-# responde igual. Demuestra el requisito del profesor: en tiempo de peticion
-# el sistema no toca las APIs externas, solo su base de datos.
+# responde igual. Demuestra el requisito del profesor: en tiempo de peticion el
+# sistema no toca las APIs externas, solo su base de datos.
 #
 #   npm run backend:offline-test
 #
 # ---------------------------------------------------------------------------
 # COMO FUNCIONA
 #
-# El backend arranca con `--import ./scripts/block-external.js`, que sustituye
-# globalThis.fetch por una version que rechaza todo lo que no sea localhost.
+# El script exporta BLOCK_EXTERNAL=1 y arranca el backend. dev.js lee esa
+# variable y hace que los procesos NODE (pokemon-service y gateway) hereden
+# NODE_OPTIONS con el preload de block-external.js, que sustituye globalThis.fetch
+# por una version que rechaza todo lo que no sea localhost. Se hace por variable
+# de entorno y no por flags de linea de comandos porque los procesos hijos NO
+# heredan los flags del padre, solo el entorno.
 #
-# Si algun dia alguien mete un fetch a PokeAPI dentro de un service o un
-# repository (donde NO deberia haberlo), el log imprimira BLOQUEADO y esta
-# prueba fallara. Esa es justamente la gracia de la prueba.
+# Si alguien metiera un fetch a PokeAPI dentro de un service o un repository
+# (donde NO deberia haberlo), el log imprimiria BLOQUEADO y esta prueba
+# fallaria. Esa es la gracia de la prueba.
 #
-# El acceso a PostgreSQL NO se bloquea: lo hace la libreria `pg` por socket, no
-# pasa por fetch. Por eso esto funciona igual con Docker local que con Supabase.
+# EL SERVICIO DE ONE PIECE ES PYTHON y no usa fetch de Node. Su aislamiento es
+# ESTRUCTURAL: los modulos de external/ (los unicos con httpx) los importa solo
+# seed.py, nunca main.py. Por eso el servicio en marcha no tiene siquiera
+# cargado el cliente HTTP y no puede salir a internet.
+#
+# El acceso a PostgreSQL NO se bloquea: lo hace asyncpg/pg por socket, no pasa
+# por fetch. Por eso esto funciona igual con Docker local que con Supabase.
 #
 # REQUISITO: las bases de datos deben tener las 20 filas cargadas
 # (npm run backend:seed). Esta prueba NO necesita internet, al contrario.
@@ -33,14 +42,15 @@ LOG=/tmp/backend-offline.log
 : > "$LOG"
 
 echo "== 1. Levantar el backend con fetch externo bloqueado =="
-node --import ./scripts/block-external.js scripts/dev.js > "$LOG" 2>&1 &
+# BLOCK_EXTERNAL=1 hace que dev.js bloquee el fetch de los procesos Node.
+BLOCK_EXTERNAL=1 node --import ./scripts/block-external.js scripts/dev.js > "$LOG" 2>&1 &
 DEV_PID=$!
 
 # Si este script termina o se interrumpe (Ctrl+C), el servidor tambien.
 # Por eso se ejecuta el kill en la salida sea cual sea el motivo.
 trap 'kill $DEV_PID 2>/dev/null' EXIT
 
-sleep 5
+sleep 6
 
 echo "== 2. Los tres servicios estan arriba =="
 for puerto in 3000 4001 4002; do
