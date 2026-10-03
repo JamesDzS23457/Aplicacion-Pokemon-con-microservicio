@@ -22,6 +22,7 @@
     "backend:pokemon": "node backend/services/pokemon-service/src/index.js",
     "backend:onepiece": "node backend/services/onepiece-service/src/index.js",
     "backend:seed": "node backend/scripts/seed.js",
+    "backend:datos": "node backend/scripts/generate-datos.js",
     "backend:verify": "node backend/scripts/verify.js",
     "backend:offline-test": "cd backend && npm run offline-test",
     "backend:setup": "cd backend && npm run setup"
