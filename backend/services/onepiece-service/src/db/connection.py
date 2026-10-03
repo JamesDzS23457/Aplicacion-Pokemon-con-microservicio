@@ -1,32 +1,35 @@
 # ---------------------------------------------------------------------------
-# POOL DE CONEXIONES A POSTGRESQL  (asyncpg)
+# CONEXION A MONGODB  (pymongo, cliente asincrono)
 #
-# QUE CAMBIA RESPECTO A LA VERSION NODE:
+# QUE CAMBIA RESPECTO A LA VERSION CON POSTGRESQL:
 #
-# En Node se usaba la libreria `pg`, que es asincrona por callbacks/promesas.
-# Aqui se usa `asyncpg`, que es asincrona con la sintaxis `await` de Python.
-# El concepto es el mismo (un pool de conexiones reutilizables), pero cambian
-# dos detalles que conviene tener claros:
+# Este servicio es la parte NO RELACIONAL del proyecto. El de Pokemon sigue en
+# PostgreSQL; aqui se guardan DOCUMENTOS, no filas. La diferencia no es solo de
+# sintaxis, es de modelo:
 #
-#   1. `asyncpg` solo admite parametros POSICIONALES ($1, $2, ...), igual que
-#      la libreria `pg`. Nunca se concatena texto: eso es lo que evita la
-#      inyeccion SQL.
-#   2. El pool se crea de forma ASINCRONA (await), no en el momento de
-#      importar el modulo. Por eso hay una funcion `get_pool()` que lo crea la
-#      primera vez y lo reutiliza despues.
+#   - No hay `CREATE TABLE` ni SQL. El esquema lo definen los indices, que se
+#     crean con `ensure_indexes()` y son idempotentes igual que el schema.sql
+#     de la version anterior.
+#   - No hay pool de conexiones que abrir y cerrar a mano: el cliente de Mongo
+#     mantiene su propio conjunto de conexiones y abre/cierra por peticion. Se
+#     crea una vez por proceso (`get_client`) y se reutiliza.
+#   - La base y la coleccion se nombran aqui: `onepiece` > `characters`.
 #
-# SSL: Supabase EXIGE conexion cifrada con un certificado propio. Node lo
-# resolvia con `rejectUnauthorized: false`; aqui el equivalente es un
-# SSLContext con check_hostname desactivado y verificacion de certificado
-# desactivada. Con DATABASE_SSL=false se conecta a un Postgres local sin SSL.
+# POR QUE EL CLIENTE ASINCRONO:
+# FastAPI es async. El cliente sincrono de pymongo bloquearia el event loop y el
+# servicio atenderia una peticion a la vez. `AsyncMongoClient` mantiene la misma
+# API pero con `await`.
+#
+# SSL/TLS: MongoDB Atlas lo exige siempre y lo negocia el driver por SRV, asi
+# que aqui no hay nada que configurar (a diferencia de Postgres, donde habia que
+# desactivar la verificacion del certificado de Supabase).
 # ---------------------------------------------------------------------------
 
 import os
-import ssl as ssl_module
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import asyncpg
+from pymongo import AsyncMongoClient
 
 # ---------------------------------------------------------------------------
 # CARGA DEL .ENV LOCAL
@@ -68,106 +71,93 @@ def _cargar_env_local() -> None:
 
 _cargar_env_local()
 
-# Ruta del esquema respecto a este archivo. Se usa Path y no un string relativo
-# para que funcione sin importar desde que carpeta se lance el proceso.
-SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-
 # Cada microservicio tiene SU PROPIA base de datos. Por eso se lee primero la
-# variable especifica del servicio y se cae a DATABASE_URL solo como valor por
+# variable especifica del servicio y se cae a MONGODB_URI solo como valor por
 # defecto (util para scripts locales).
-CONNECTION_STRING = os.environ.get("ONEPIECE_DATABASE_URL") or os.environ.get("DATABASE_URL")
+MONGODB_URI = os.environ.get("ONEPIECE_MONGODB_URI") or os.environ.get("MONGODB_URI")
 
-# Falla pronto y con un mensaje claro, en lugar de dejar que asyncpg lance un
+# Falla pronto y con un mensaje claro, en lugar de dejar que pymongo lance un
 # error de conexion mas adelante y mas dificil de entender.
-if not CONNECTION_STRING:
-    raise RuntimeError("Falta ONEPIECE_DATABASE_URL (o DATABASE_URL) en el entorno.")
+if not MONGODB_URI:
+    raise RuntimeError("Falta ONEPIECE_MONGODB_URI (o MONGODB_URI) en el entorno.")
+
+# Nombre de la base y de la coleccion. En Mongo no hay `schema`, asi que el
+# equivalente de "la tabla characters" es la coleccion con ese nombre dentro de
+# la base `onepiece`.
+DB_NAME = os.environ.get("ONEPIECE_MONGODB_DB", "onepiece")
+COLLECTION_NAME = "characters"
 
 
 def _extraer_host():
-    """Host de la base, SIN usuario ni contrasena, solo para los logs de arranque.
+    """Host del clustro, SIN usuario ni contrasena, solo para los logs de arranque.
 
     Sirve para responder de un vistazo a "contra que base estoy hablando":
-    "localhost" = Postgres local; "aws-0-...pooler.supabase.com" = Supabase.
-    urlsplit entiende "postgresql://..." y separa el host, asi que lo que se
-    imprime nunca incluye credenciales.
+    "cluster0.xxxxx.mongodb.net" = MongoDB Atlas; "localhost" = Mongo local.
+    urlsplit entiende "mongodb+srv://..." igual que "postgresql://...", asi que lo
+    que se imprime nunca incluye credenciales.
     """
     try:
-        return urlsplit(CONNECTION_STRING).hostname or "desconocido"
+        return urlsplit(MONGODB_URI).hostname or "desconocido"
     except Exception:
         return "desconocido"
 
 
 DB_HOST = _extraer_host()
 
-# Por defecto se pide SSL (lo que exige Supabase). DATABASE_SSL=false lo
-# desactiva para un Postgres local (Docker) que no tenga SSL configurado.
-_USE_SSL = os.environ.get("DATABASE_SSL") != "false"
-
-# El pool se guarda a nivel de modulo y se crea una sola vez.
-_pool = None
+# El cliente se guarda a nivel de modulo y se crea una sola vez, en el primer
+# uso, no al importar el modulo (importarlo no debe abrir ninguna conexion).
+_client = None
 
 
-def _ssl_context():
-    """Contexto SSL equivalente al `rejectUnauthorized: false` de Node."""
-    if not _USE_SSL:
-        return None
-    ctx = ssl_module.create_default_context()
-    # Supabase usa un certificado que Python no puede validar contra la cadena
-    # de autoridades por defecto; se acepta igual que hacia la version Node.
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl_module.CERT_NONE
-    return ctx
-
-
-async def get_pool():
-    """Devuelve el pool, creandolo la primera vez (lazy)."""
-    global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(
-            dsn=CONNECTION_STRING,
-            ssl=_ssl_context(),
-            min_size=1,
-            max_size=10,          # conexiones maximas simultaneas del proceso
-            command_timeout=30,   # aborta una consulta que tarde mas de 30s
-            # Supabase pone un pooler delante de PostgreSQL (Supavisor). En modo
-            # TRANSACCION ese pooler reutiliza conexiones entre clientes y no
-            # admite sentencias preparadas con nombre; asyncpg las usa por
-            # defecto y fallaria con "prepared statement already exists".
-            # Desactivar la cache (0) evita ese fallo y funciona igual con el
-            # pooler en modo sesion. El coste es minimo para este trafico.
-            statement_cache_size=0,
+async def get_client():
+    """Devuelve el cliente de Mongo, creandolo la primera vez (lazy)."""
+    global _client
+    if _client is None:
+        _client = AsyncMongoClient(
+            MONGODB_URI,
+            # Corta pronto si no hay red o el clustro esta dormido, para que el
+            # servicio responda con un error claro en vez de colgarse. Atlas
+            # wakea en unos segundos, asi que 15s deja margen de sobra.
+            serverSelectionTimeoutMS=15_000,
+            # Atlas enruta por el SRV; con un solo host basta con una prueba de
+            # vida al empezar y el driver se encarga del resto.
+            connectTimeoutMS=10_000,
         )
-    return _pool
+    return _client
 
 
-async def query(text, *params):
-    """Ejecuta una consulta y devuelve todas sus filas."""
-    pool = await get_pool()
-    return await pool.fetch(text, *params)
+async def get_collection():
+    """Devuelve la coleccion `characters` de la base `onepiece`."""
+    client = await get_client()
+    return client[DB_NAME][COLLECTION_NAME]
 
 
-async def query_one(text, *params):
-    """Igual que query(), pero devuelve solo la primera fila (o None)."""
-    pool = await get_pool()
-    return await pool.fetchrow(text, *params)
+async def ping():
+    """Comprueba que hay conexion de verdad. Lo usa /health y el seed."""
+    client = await get_client()
+    await client.admin.command("ping")
+    return True
 
 
-async def ensure_schema():
-    """Crea la tabla y el trigger si no existen. Idempotente.
+async def ensure_indexes():
+    """Crea los indices si no existen. Idempotente.
 
-    `pool.execute` sin parametros usa el protocolo simple de PostgreSQL, que
-    admite varios statements separados por punto y coma (CREATE TABLE, CREATE
-    INDEX, CREATE FUNCTION, CREATE TRIGGER). Por eso schema.sql se puede enviar
-    entero de una vez.
+    En MongoDB el indice es lo mas parecido a lo que hacia el `CREATE INDEX` y
+    el `CREATE UNIQUE` de la version con PostgreSQL, y se puede repetir sin
+    romper nada. El indice unico de `name` es el equivalente al `UNIQUE` de la
+    tabla: no admite dos personajes con el mismo nombre.
+
+    El indice de `search_key` es el campo por el que se hacen las busquedas
+    tolerantes (ver repositories/characters_repository.py).
     """
-    pool = await get_pool()
-    sql = SCHEMA_PATH.read_text(encoding="utf-8")
-    await pool.execute(sql)
+    coleccion = await get_collection()
+    await coleccion.create_index([("name", 1)], unique=True, name="uniq_characters_name")
+    await coleccion.create_index([("search_key", 1)], name="idx_characters_search_key")
 
 
 async def close_pool():
-    """Cierra el pool. Necesario en los scripts que terminan (seed)."""
-    global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+    """Cierra el cliente. Necesario en los scripts que terminan (seed)."""
+    global _client
+    if _client is not None:
+        await _client.close()
+        _client = None

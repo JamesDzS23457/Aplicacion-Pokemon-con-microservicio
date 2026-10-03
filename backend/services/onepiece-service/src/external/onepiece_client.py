@@ -3,7 +3,7 @@
 #
 # UNICA capa que hace peticiones a internet junto con jikan_client.py. Se usa
 # SOLO desde el seed: en el flujo normal de busqueda nunca se llama, porque la
-# respuesta sale de PostgreSQL.
+# respuesta sale de MongoDB.
 #
 # Esa separacion es el requisito del profesor: si el servidor externo se cae,
 # la app sigue funcionando con los 20 registros guardados.

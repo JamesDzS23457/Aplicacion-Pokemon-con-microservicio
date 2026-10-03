@@ -1,4 +1,4 @@
-# Despliegue en Render: 3 web services independientes (gateway + 2 microservicios).
+# Despliegue en Render: 4 web services independientes (gateway + 3 microservicios).
 #   render blueprint launch
 #
 # LA BASE DE DATOS YA NO ESTA AQUI.
@@ -38,11 +38,21 @@ services:
       # la URL interna equivocada y todas las llamadas fallan con 503.
 
   # ---------------------------------------------------------------
-  # Microservicio 2: One Piece (Postgres propia, 20 personajes)
+  # Microservicio 2: One Piece (MongoDB propia, 20 personajes)
   #
   # OJO: este es el unico servicio en PYTHON (FastAPI + uvicorn). Render lo
   # distingue por `runtime: python`. El contrato HTTP es identico al que tenia
   # la version Node, asi que el gateway y el frontend no cambian.
+  #
+  # Es ademas el unico servicio con base de datos NO RELACIONAL: MongoDB Atlas.
+  # Pokemon sigue con PostgreSQL. El enunciado pide una de cada tipo.
+  #
+  # MongoDB Atlas exige `retryWrites=true&w=majority` en la URI para que las
+  # escrituras tengan garantia de reconocimiento; van dentro de la propia URI,
+  # asi que se pega tal cual desde el panel de Atlas ("Connect" > driver
+  # Node/Python). No hay que configurar nada mas de red: Atlas acepta
+  # conexiones desde cualquier IP, que es lo que hace falta porque Render no
+  # tiene IP fija.
   # ---------------------------------------------------------------
   - type: web
     name: onepiece-service
@@ -53,15 +63,47 @@ services:
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
-      - key: ONEPIECE_DATABASE_URL
+      # sync: false = NO aparece en el dashboard (ver nota de pokemon-service).
+      # Es donde se pega la URI de Atlas con usuario y contrasena.
+      - key: ONEPIECE_MONGODB_URI
         sync: false
-      - key: DATABASE_SSL
-        value: "true"
       # Render instala el Python que se le indique. Se fija 3.12 porque es una
-      # version estable con ruedas precompiladas de asyncpg y uvloop; con una
+      # version estable con ruedas precompiladas de pymongo y uvloop; con una
       # version mas nueva pip podria intentar compilar y tardar o fallar.
       - key: PYTHON_VERSION
         value: "3.12.7"
+      # PORT lo detecta Render. Ver la nota en pokemon-service.
+
+  # ---------------------------------------------------------------
+  # Microservicio 3: Docentes (Postgres propia, 20 docentes)
+  #
+  # Este es el servicio AGNOSTICO: no usa Express ni ningun framework de
+  # HTTP. Solo `node:http`, el modulo que ya trae Node. Su unica dependencia
+  # npm es `pg`, porque Node no incluye un driver de PostgreSQL.
+  # La documentacion OpenAPI tambien esta escrita a mano (src/docs/openapi.js),
+  # sin swagger-jsdoc ni swagger-ui-express: Swagger UI se carga desde un CDN
+  # dentro de una pagina HTML propia.
+  #
+  # El servicio es de SOLO LECTURA (solo GET). Eso no es casualidad: el
+  # enunciado pide que los datos viajen por path params y query params, nunca
+  # por body. Sin verbos que escriban, no hay forma de tener un body, asi que
+  # la restriccion se cumple por construccion y no por disciplina.
+  # ---------------------------------------------------------------
+  - type: web
+    name: docentes-service
+    runtime: node
+    plan: free
+    rootDir: backend/services/docentes-service
+    buildCommand: npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    envVars:
+      # sync: false = NO aparece en el dashboard (ver nota de pokemon-service).
+      # Es donde se pega la URI de la base de datos de docentes en Supabase.
+      - key: DOCENTES_DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
       # PORT lo detecta Render. Ver la nota en pokemon-service.
 
   # ---------------------------------------------------------------
@@ -107,5 +149,10 @@ services:
       - key: ONEPIECE_SERVICE_URL
         fromService:
           name: onepiece-service
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: DOCENTES_SERVICE_URL
+        fromService:
+          name: docentes-service
           type: web
           envVarKey: RENDER_EXTERNAL_HOSTNAME

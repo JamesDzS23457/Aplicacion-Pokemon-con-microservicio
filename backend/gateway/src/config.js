@@ -2,11 +2,11 @@
 // CONFIGURACION DEL GATEWAY
 //
 // El gateway no tiene base de datos propia: solo necesita saber DONDE estan
-// los otros dos microservicios para reenviarles las peticiones.
+// los otros microservicios para reenviarles las peticiones.
 //
-// Cada microservicio lee una variable distinta a proposito. Si ambas usaran la
-// misma DATABASE_URL, los dos apuntarian a la misma base y se pisarian entre
-// si (y perderian la independencia que justifica tenerlos separados).
+// Cada microservicio lee una variable distinta a proposito. Si dos usaran la
+// misma URL de servicio, ambos apuntarian al mismo sitio y se pisarian entre si
+// (y perderian la independencia que justifica tenerlos separados).
 // ---------------------------------------------------------------------------
 
 /**
@@ -50,4 +50,5 @@ function normalizeUrl(value, fallback) {
 export const config = {
   POKEMON_SERVICE_URL: normalizeUrl(process.env.POKEMON_SERVICE_URL, 'http://localhost:4001'),
   ONEPIECE_SERVICE_URL: normalizeUrl(process.env.ONEPIECE_SERVICE_URL, 'http://localhost:4002'),
+  DOCENTES_SERVICE_URL: normalizeUrl(process.env.DOCENTES_SERVICE_URL, 'http://localhost:4003'),
 };

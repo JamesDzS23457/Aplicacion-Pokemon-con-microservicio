@@ -3,7 +3,10 @@
 //
 // Mejora sobre el diseno anterior:
 //   - Cada seccion tiene su color activo: azul para Pokemon, coral para One
-//     Piece. Ayuda a saber en que mitad de la app estas.
+//     Piece y verde para Docentes. Ayuda a saber en que parte de la app estas.
+//   - La quinta pestana (Docentes) tiene una etiqueta larga, asi que el texto de
+//     la barra baja un punto de tamano. Con cinco elementos la etiqueta "Docentes"
+//     se cortaba en "Docent..." en pantallas estrechas.
 //   - Etiquetas mas claras ("Ficha" en vez de "Datos").
 //   - La barra lleva borde superior y una sombra suave para separarse del
 //     contenido al hacer scroll.
@@ -33,7 +36,10 @@ export default function TabsLayout() {
           shadowOffset: { width: 0, height: -4 },
           elevation: 8,
         },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
+        // Un punto mas chico que antes (eran 11 con cuatro pestanas). Con cinco
+        // iconos la barra se estrecha y a 11 puntos "Docentes" se cortaba. El
+        // peso se sube para compensar el tamano.
+        tabBarLabelStyle: { fontSize: 10, fontWeight: '700' },
       }}
     >
       <Tabs.Screen
@@ -71,6 +77,19 @@ export default function TabsLayout() {
           tabBarActiveTintColor: colors.onepiece,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="reader-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      {/* Quinta pestana: el listado de docentes. Va ULTIMA a proposito, para
+          que las dos secciones anteriores (Pokemon y One Piece) sigan estando
+          donde estaban y no se desplace lo que ya se conoce. */}
+      <Tabs.Screen
+        name="docentes"
+        options={{
+          title: 'Docentes',
+          tabBarActiveTintColor: colors.docentes,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="school-outline" size={size} color={color} />
           ),
         }}
       />

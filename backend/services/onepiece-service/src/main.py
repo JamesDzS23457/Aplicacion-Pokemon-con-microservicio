@@ -6,10 +6,9 @@
 #
 # Orden de arranque, importante:
 #
-#   1. lifespan -> ensure_schema() crea la tabla y el trigger si no existen.
+#   1. lifespan -> ensure_indexes() crea los indices si no existen.
 #                  Se hace ANTES de aceptar peticiones: asi ningun cliente
-#                  recibe un 500 en los primeros milisegundos por una tabla que
-#                  todavia no esta.
+#                  recibe un 500 en los primeros milisegundos.
 #   2. La app empieza a servir.
 #
 # Swagger: FastAPI genera la documentacion OpenAPI y la sirve sola. Aquellas
@@ -30,6 +29,7 @@ from .db import connection
 from .lib.errors import ApiError
 from .lib.log import ENTORNO, crear_log
 from .models.character import HealthResponse
+from .repositories import characters_repository as repo
 from .routers import characters as characters_router
 
 log = crear_log("onepiece-service")
@@ -38,18 +38,18 @@ log = crear_log("onepiece-service")
 @asynccontextmanager
 async def lifespan(_app):
     """Arranque y parada del servicio (sustituye a los eventos on_event)."""
-    # 1. Esquema antes de escuchar. Es idempotente (IF NOT EXISTS), asi que
-    #    arrancar varias veces no rompe nada.
-    await connection.ensure_schema()
+    # 1. Indices antes de escuchar. Es idempotente, asi que arrancar varias
+    #    veces no rompe nada.
+    await connection.ensure_indexes()
     puerto = os.environ.get("PORT", "4002")
     # Se imprime el entorno y CONTRA QUE BASE se habla (el host, nunca las
     # credenciales). Es lo primero que se mira si una busqueda "no encuentra
-    # nada": si ENTORNO=LOCAL, estas consultando tu Postgres local, no Supabase.
+    # nada": si ENTORNO=LOCAL, estas consultando tu Mongo local, no Atlas.
     log(f"ENTORNO={ENTORNO} | BD={connection.DB_HOST} | escuchando en :{puerto}")
 
     yield
 
-    # 2. Al parar, se cierra el pool para no dejar conexiones abiertas.
+    # 2. Al parar, se cierra el cliente para no dejar conexiones abiertas.
     await connection.close_pool()
 
 
@@ -57,10 +57,10 @@ app = FastAPI(
     title="One Piece API",
     description=(
         "Microservicio propio de personajes de anime (One Piece) escrito en "
-        "Python con FastAPI. Consume una base de datos PostgreSQL (Supabase) "
-        "con 20 personajes cargados una sola vez durante el seed. En tiempo de "
-        "peticion NO consulta ninguna API externa: la respuesta sale de la "
-        "base de datos local."
+        "Python con FastAPI. Consume una base de datos NO RELACIONAL "
+        "(MongoDB Atlas) con 20 personajes cargados una sola vez durante el "
+        "seed. En tiempo de peticion NO consulta ninguna API externa: la "
+        "respuesta sale de la base de datos local."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -112,8 +112,9 @@ async def generic_error_handler(_request: Request, exc: Exception):
 async def health():
     # Incluye el conteo porque un servicio que responde pero tiene 0 personajes
     # es un servicio "sano pero inservible", y conviene poder detectarlo.
-    row = await connection.query_one("SELECT COUNT(*)::int AS n FROM characters")
-    return {"status": "ok", "service": "onepiece-service", "characters": row["n"]}
+    # El conteo sale del repository, no de una consulta escrita aqui: la base
+    # solo se toca desde repositories/.
+    return {"status": "ok", "service": "onepiece-service", "characters": await repo.count()}
 
 
 app.include_router(characters_router.router)

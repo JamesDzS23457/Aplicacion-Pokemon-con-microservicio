@@ -1,0 +1,14 @@
+{
+  "name": "docentes-service",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}

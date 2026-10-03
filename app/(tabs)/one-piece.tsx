@@ -10,9 +10,10 @@
 // ---------------------------------------------------------------------------
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
-import { Image, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { Image, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   EmptyState,
   FadeIn,
@@ -21,6 +22,7 @@ import {
   LoadingCard,
   Notice,
   Pill,
+  RefreshButton,
   ScreenHeader,
   SearchBar,
   SectionTitle,
@@ -53,8 +55,19 @@ function fruitColor(type?: string) {
 
 export default function OnePieceScreen() {
   const [nombre, setNombre] = useState('Monkey D Luffy');
-  const { character, cargando, mensaje, tono, buscarPersonaje } = useOnePiece();
+  const { character, cargando, mensaje, tono, ultimaBusqueda, buscarPersonaje, refrescar } =
+    useOnePiece();
   const buscar = () => buscarPersonaje(nombre);
+
+  // Al volver a esta pestaña se reconsultan los datos del personaje que ya se
+  // estaba viendo, para que un cambio hecho en MongoDB mientras el usuario
+  // estaba en otra pantalla se vea al regresar.
+  useFocusEffect(
+    useCallback(() => {
+      if (ultimaBusqueda) refrescar();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ultimaBusqueda]),
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -63,6 +76,14 @@ export default function OnePieceScreen() {
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={cargando}
+            onRefresh={refrescar}
+            colors={[colors.onepiece]}
+            tintColor={colors.onepiece}
+          />
+        }
       >
         <ScreenHeader
           title="Grand Line"
@@ -80,6 +101,17 @@ export default function OnePieceScreen() {
           accent={colors.onepiece}
           loading={cargando}
         />
+
+        {character && !cargando ? (
+          <View style={styles.refreshRow}>
+            <RefreshButton
+              onPress={refrescar}
+              accent={colors.onepiece}
+              loading={cargando}
+              disabled={!ultimaBusqueda}
+            />
+          </View>
+        ) : null}
 
         {mensaje ? <Notice text={mensaje} tone={tono} /> : null}
 
@@ -220,6 +252,12 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     padding: spacing.xl,
     paddingBottom: spacing.xxl,
+  },
+
+  // Margen bajo el campo de busqueda para el boton de refresco.
+  refreshRow: {
+    marginTop: spacing.md,
+    marginBottom: spacing.lg,
   },
 
   hero: {

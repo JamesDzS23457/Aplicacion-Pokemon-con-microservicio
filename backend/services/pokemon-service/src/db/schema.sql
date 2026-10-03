@@ -60,3 +60,48 @@ CREATE TRIGGER pokemons_max_20
   BEFORE INSERT ON pokemons
   FOR EACH ROW
   EXECUTE FUNCTION enforce_pokemons_limit();
+
+
+-- --------------------------------------------------------------------------
+-- SEARCH_KEY AL RENOMBRAR UN POKEMON
+--
+-- `search_key` es la version normalizada del nombre y la columna por la que de
+-- verdad se busca. El seed la rellena, pero si alguien edita `name` a mano desde
+-- el Table Editor de Supabase y no toca `search_key`, la fila se queda con una
+-- clave que ya no corresponde con su nombre: buscar por el nombre NUEVO da 404
+-- y el nombre VIEJO sigue encontrando al personaje renombrado.
+--
+-- Este trigger recalcula la clave cada vez que cambia el nombre, para que la
+-- base quede coherente sin depender de que quien edita se acuerde. Es la unica
+-- forma de garantizarlo, porque un trigger de PostgreSQL si puede observar los
+-- UPDATE; en la base no relacional de One Piece esto no aplica y se resuelve en
+-- el codigo.
+-- --------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION refresh_pokemons_search_key() RETURNS TRIGGER AS $$
+DECLARE
+  base text;
+BEGIN
+  -- Se replica EXACTAMENTE la regla de src/lib/normalize.js, que es:
+  --   1. cortar por '/' y quedarse con la parte anterior;
+  --   2. pasar a minusculas;
+  --   3. quitar los acentos (NFD + eliminar el diacritico U+0300-U+036F);
+  --   4. quitar todo lo que no sea [a-z0-9].
+  -- Si esta consulta y el codigo no coinciden, un Pokemon con acento o con guion
+  -- se guardaria con una clave distinta de la que busca el servicio.
+  base := split_part(NEW.name, '/', 1);
+  base := lower(base);
+  -- translate() quita los signos mas usados; unaccent() cubre el resto, pero
+  -- solo esta disponible con la extension "unaccent" instalada. Se usa
+  -- translate porque no depende de ninguna extension extra.
+  base := translate(base, 'áàäâãåéèëêíìïîóòöôõúùüûñç', 'aaaaaaeeeeiiiiooooouuuunc');
+  NEW.search_key := regexp_replace(base, '[^a-z0-9]', '', 'g');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS pokemons_search_key ON pokemons;
+
+CREATE TRIGGER pokemons_search_key
+  BEFORE INSERT OR UPDATE OF name ON pokemons
+  FOR EACH ROW
+  EXECUTE FUNCTION refresh_pokemons_search_key();

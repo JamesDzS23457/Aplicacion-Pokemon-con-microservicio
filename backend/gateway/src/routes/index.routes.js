@@ -21,12 +21,14 @@ router.get('/', (_req, res) => {
     services: {
       pokemon: config.POKEMON_SERVICE_URL,
       onepiece: config.ONEPIECE_SERVICE_URL,
+      docentes: config.DOCENTES_SERVICE_URL,
     },
     // Misma informacion que `services`, pero ya clasificada como LOCAL o
     // DESPLEGADO, para no tener que comparar la URL a mano.
     destinos: {
       pokemon: clasificarDestino(config.POKEMON_SERVICE_URL),
       onepiece: clasificarDestino(config.ONEPIECE_SERVICE_URL),
+      docentes: clasificarDestino(config.DOCENTES_SERVICE_URL),
     },
   });
 });

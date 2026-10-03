@@ -19,7 +19,11 @@ type PokemonContextValue = {
   mensaje: string;
   /** 'info' para el aviso de arranque en frio; 'error' para fallos reales. */
   tono: 'error' | 'info';
+  /** El Pokemon de la ultima busqueda correcta, para poder refrescarlo. */
+  ultimaBusqueda: string;
   buscarPokemon: (nombre: string) => Promise<void>;
+  /** Vuelve a consultar la ultima busqueda (boton Actualizar / pull-to-refresh). */
+  refrescar: () => Promise<void>;
 };
 
 const PokemonContext = createContext<PokemonContextValue | undefined>(undefined);
@@ -29,16 +33,26 @@ export function PokemonProvider({ children }: PropsWithChildren) {
   const [cargando, setCargando] = useState(false);
   const [mensaje, setMensaje] = useState('');
   const [tono, setTono] = useState<'error' | 'info'>('error');
+  // Se recuerda QUE se busco por ultima vez. Sin esto no hay forma de volver a
+  // pedir el mismo dato cuando cambia en la base de datos: la app solo consultaba
+  // al pulsar "Buscar", asi que una edicion hecha en la BD no se veia hasta que
+  // el usuario volvia a escribir el nombre a mano.
+  const [ultimaBusqueda, setUltimaBusqueda] = useState('');
 
   const buscarPokemon = async (nombre: string) => {
     const normalizedName = nombre.trim().toLowerCase();
     if (!normalizedName) {
       setPokemon(null);
+      setUltimaBusqueda('');
       setTono('error');
       setMensaje('Escribe el nombre de un Pokemon.');
       return;
     }
 
+    // Se guarda ANTES de la peticion, no despues: si el servicio esta dormido y
+    // la busqueda falla, el nombre sigue remembering para que el usuario pueda
+    // reintentar con "Actualizar" sin volver a escribirlo.
+    setUltimaBusqueda(normalizedName);
     setCargando(true);
     setMensaje('');
     setTono('error');
@@ -55,7 +69,16 @@ export function PokemonProvider({ children }: PropsWithChildren) {
     try {
       const response = await fetch(`${API_URL}/api/pokemon/search`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // La respuesta tiene que reflejar el estado ACTUAL de la base. Sin
+          // esto, el navegador o un proxy intermedio pueden devolver la
+          // respuesta anterior y seguir mostrando el Pokemon viejo.
+          'Cache-Control': 'no-cache',
+        },
+        // Sin cache propia del navegador para esta peticion: es la unica forma
+        // de garantizar que "Actualizar" de verdad va a buscar el dato nuevo.
+        cache: 'no-store',
         body: JSON.stringify({ name: normalizedName }),
       });
       estado = response.status;
@@ -72,7 +95,14 @@ export function PokemonProvider({ children }: PropsWithChildren) {
     } catch (error) {
       const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar el servicio.';
       log(`  ${estado || 'sin respuesta'} en ${Date.now() - inicio}ms: ${mensajeError}`);
-      setPokemon(null);
+      // Solo se borra la ficha si NO habia ninguna antes. Si ya se estaba
+      // viendo un Pokemon y un refresco falla (tipicamente el arranque en frio
+      // de Render), quitarlo de la pantalla deja la app vacia y da la impresion
+      // de que se perdio el dato. Es mejor mantener lo que ya se tenia y avisar
+      // del fallo con el Notice, que ya se explica.
+      // Si ya habia una ficha en pantalla, se conserva: un refresco fallido no debe
+      // vaciar la app. Solo se limpia cuando no habia nada antes.
+      setPokemon((actual) => (actual ?? null));
       // El arranque en frio no es culpa del usuario: se muestra como aviso
       // informativo, con un texto que explica que hay que reintentar.
       if (esArranqueFrio(estado, mensajeError)) {
@@ -90,7 +120,30 @@ export function PokemonProvider({ children }: PropsWithChildren) {
     }
   };
 
-  return <PokemonContext.Provider value={{ pokemon, cargando, mensaje, tono, buscarPokemon }}>{children}</PokemonContext.Provider>;
+  /**
+   * Vuelve a consultar la ultima busqueda.
+   *
+   * Es el mecanismo que hace que un cambio en la base de datos se vea en la
+   * app: la pantalla guarda el resultado en memoria y no vuelve a preguntar
+   * sola, asi que sin esto habia que reescribir el nombre a mano para ver el
+   * dato nuevo. Lo llama el boton "Actualizar" y el pull-to-refresh.
+   *
+   * Reutiliza `buscarPokemon` en lugar de duplicar la llamada: asi el refresco
+   * aplica exactamente los mismos criterios (mismo normalizado, mismos errores).
+   */
+  const refrescar = async () => {
+    if (!ultimaBusqueda || cargando) return;
+    log(`refrescando "${ultimaBusqueda}"`);
+    await buscarPokemon(ultimaBusqueda);
+  };
+
+  return (
+    <PokemonContext.Provider
+      value={{ pokemon, cargando, mensaje, tono, ultimaBusqueda, buscarPokemon, refrescar }}
+    >
+      {children}
+    </PokemonContext.Provider>
+  );
 }
 
 export function usePokemon() {

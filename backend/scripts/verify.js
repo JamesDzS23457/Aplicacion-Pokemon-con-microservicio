@@ -11,12 +11,26 @@
 // de datos y no el codigo.
 //
 // NOTA DE ARQUITECTURA: este script NO habla con el microservicio de One Piece
-// (que ya no es Node), sino DIRECTAMENTE con su base de datos PostgreSQL. Asi
-// sigue funcionando sin levantar el servicio Python, y ademas comprueba la
-// tabla real, no lo que devuelve una capa por encima.
+// (que ya no es Node), sino con su base de datos. Pokemon y Docentes se
+// comprueban desde Node con sus repositories; One Piece se comprueba con el
+// cliente de MongoDB que usa su propio venv de Python. Asi verify sigue
+// funcionando sin levantar ningun servicio, y ademas comprueba la base real, no
+// lo que devuelve una capa por encima.
+//
+// LAS BASES NO SON TODAS DEL MISMO TIPO, y es a proposito: Pokemon y Docentes
+// son RELACIONALES (PostgreSQL) y One Piece es NO RELACIONAL (MongoDB). Este
+// script es el unico sitio del proyecto de Node que habla con Mongo, y lo hace
+// a traves de Python para no anadir el driver `mongodb` a un proyecto que no
+// lo necesita.
+//
+// DOCENTES es el tercero. Se importan su repository y su pool igual que los de
+// Pokemon, pero desde SU carpeta: cada microservicio tiene sus propias
+// dependencias y verify no las mezcla. A diferencia de Pokemon, Docentes no
+// llama a ninguna API externa en el seed (los datos estan en
+// backend/scripts/docentes-datos.js), asi que su comprobacion es solo de datos.
 // ---------------------------------------------------------------------------
 
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 import * as pokemonRepo from '../services/pokemon-service/src/repositories/pokemon.repository.js';
@@ -25,63 +39,218 @@ import {
   ensureSchema as ensurePokemonsSchema,
   closePool as closePokemonsPool,
 } from '../services/pokemon-service/src/db/connection.js';
+import * as docentesRepo from '../services/docentes-service/src/repositories/docentes.repository.js';
+import {
+  ensureSchema as ensureDocentesSchema,
+  closePool as closeDocentesPool,
+} from '../services/docentes-service/src/db/connection.js';
 
 // ---------------------------------------------------------------------------
-// CONEXION DIRECTA A LA BASE DE ONE PIECE
+// CONEXION A LA BASE DE ONE PIECE  (MongoDB, a traves del venv de Python)
 //
-// Se crea un pool propio (no se importa el del servicio Python, que es otro
-// lenguaje). El trigger del limite de 20 SI vive en esta base, asi que solo
-// consultandola de verdad se puede comprobar.
+// One Piece ya no usa PostgreSQL: su base es MongoDB. Este script no anade el
+// driver `mongodb` a backend/ porque ese driver no se usa en ningun sitio del
+// proyecto de Node. En su lugar ejecuta un fragmento de Python con el
+// interprete del venv del microservicio, que ya tiene `pymongo`.
 //
-// POR QUE createRequire:
+// Cada operacion devuelve JSON por stdout, y este script lo parsea. Es un poco
+// indirecto, pero evita duplicar la dependencia y mantiene la regla de que la
+// base de One Piece solo se toca desde codigo Python.
+//
+// POR QUE createRequire (para Pokemon):
 // `pg` no es dependencia de backend/ (la carpeta scripts/ no tiene node_modules
 // propio): la instala pokemon-service. En vez de duplicar la dependencia, este
 // require se ancla al package.json de pokemon-service, de modo que Node
-// resuelve el MISMO `pg` que usa el servicio. Ademas, si esa carpeta no
-// existiera, este script ya fallaria antes al importar el repository.
+// resuelve el MISMO `pg` que usa el servicio.
 // ---------------------------------------------------------------------------
 const require = createRequire(
   new URL('../services/pokemon-service/package.json', import.meta.url),
 );
 const pg = require('pg');
 
-const ONEPIECE_URL = process.env.ONEPIECE_DATABASE_URL || process.env.DATABASE_URL;
-if (!ONEPIECE_URL) {
-  console.error('Falta ONEPIECE_DATABASE_URL (o DATABASE_URL) para verificar One Piece.');
+const ONEPIECE_MONGO = process.env.ONEPIECE_MONGODB_URI || process.env.MONGODB_URI;
+if (!ONEPIECE_MONGO) {
+  console.error('Falta ONEPIECE_MONGODB_URI (o MONGODB_URI) para verificar One Piece.');
   process.exit(1);
 }
 
-const useSsl = process.env.DATABASE_SSL !== 'false';
-const charactersPool = new pg.Pool({
-  connectionString: ONEPIECE_URL,
-  ssl: useSsl ? { rejectUnauthorized: false } : false,
-  max: 4,
-});
+/**
+ * Ejecuta un fragmento de Python con pymongo y devuelve lo que imprima en JSON.
+ *
+ * `codigo` recibe `col` (la coleccion de personajes) y `RE` como variables ya
+ * definidas, para que aqui no haya que repetir ni el nombre de la base ni el de
+ * la coleccion.
+ */
+async function mongoQuery(codigo) {
+  const servicio = new URL('../services/onepiece-service/', import.meta.url);
+  // El fragmento se envuelve en una funcion `async def _coro(col)` porque awaits
+  // sueltos dentro de `main()` no valen: la funcion que se pasa tiene que ser
+  // una corrutina propia que reciba la coleccion ya resuelta.
+  const wrapper = `
+import asyncio, json, re, sys
+from pymongo import AsyncMongoClient
 
-/** Ejecuta SQL contra la base de One Piece y devuelve las filas. */
-async function charactersQuery(text, params = []) {
-  const { rows } = await charactersPool.query(text, params);
-  return rows;
+URI = ${JSON.stringify(ONEPIECE_MONGO)}
+DB_NAME = ${JSON.stringify(process.env.ONEPIECE_MONGODB_DB || 'onepiece')}
+
+${codigo}
+
+async def main():
+    cliente = AsyncMongoClient(URI)
+    col = cliente[DB_NAME]['characters']
+    resultado = await _(col)
+    print(json.dumps(resultado, default=str))
+    await cliente.close()
+
+asyncio.run(main())
+`;
+  try {
+    const salida = execFileSync(
+      new URL('./.venv/bin/python', servicio).pathname,
+      ['-c', wrapper],
+      {
+        encoding: 'utf8',
+        cwd: new URL('./', servicio).pathname,
+        // Sin esto, execFileSync HEREDA la salida de error del hijo y el
+        // traceback de 40 lineas de pymongo se imprime en medio de los
+        // resultados, tapando el Aviso de una linea que explica que paso. Con
+        // 'pipe' en los tres descriptores, stderr se captura en error.stderr y
+        // solo se muestra el mensaje resumido.
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    return JSON.parse(salida.trim().split('\n').pop());
+  } catch (error) {
+    // Si MongoDB no responde, verify ABANDONA. Eso estaba mal por dos motivos:
+    //
+    //   1. Se pierden las comprobaciones de Pokemon y Docentes, que son
+    //      justamente las que se pueden hacer. Un problema de red con Atlas no
+    //      deberia impedir revisar las otras dos bases.
+    //   2. El mensaje que sale es un volcado de 40 lineas de traceback de pymongo
+    //      sobre la causa REAL (a veces "Temporary failure in name resolution"),
+    //      que es lo unico que de verdad dice que paso.
+    //
+    // Se avisa en una linea y se devuelve `null`. Las comprobaciones que dependan
+    // de esto fallaran con "obtenido: null", que se lee mucho mejor que un
+    // volcado de stack.
+    console.log(
+      ` AVISO  No se pudo consultar MongoDB: ${primeraLineaUtil(String(error.stderr || error.message))}` +
+        '\n        Se saltan las comprobaciones de One Piece; las de Pokemon y Docentes siguen.',
+    );
+    return null;
+  }
 }
 
 /**
- * Replica la consulta de busqueda del servicio Python.
+ * Saca el mensaje de error de verdad del volcado de texto de Python.
+ *
+ * El traceback de pymongo son 40 lineas de calls internos y el motivo real esta
+ * al FINAL ("Temporary failure in name resolution", "SSL handshake failed"...).
+ * Se busca la ultima linea con pinta de exception; si no hay ninguna, se coge la
+ * ultima linea no vacia. Se recorta a 160 caracteres porque el `Topology
+ * Description` que se cuelga al final ocupa media linea.
+ *
+ * @param {string} texto `error.stderr` (o el mensaje) de la ejecucion fallida.
+ * @returns {string} Una linea con el motivo.
+ */
+function primeraLineaUtil(texto) {
+  const lineas = String(texto)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const conExcepcion = lineas.filter((l) => /[A-Za-z][A-Za-z0-9_.]*(Error|Exception)\b/.test(l));
+  const elegida = (conExcepcion.length > 0 ? conExcepcion[conExcepcion.length - 1] : lineas[lineas.length - 1]) || '';
+  return elegida.length > 160 ? `${elegida.slice(0, 157)}...` : elegida || 'error desconocido';
+}
+
+/** Cuantos personajes hay en MongoDB. */
+async function mongoCountCharacters() {
+  return mongoQuery(`
+async def _(col):
+    return await col.count_documents({})
+`);
+}
+
+/** Un personaje por nombre, o null. Traduce `raceEstimated` a camelCase igual que el repository. */
+async function mongoOne(name) {
+  return mongoQuery(`
+async def _(col):
+    doc = await col.find_one({"name": ${JSON.stringify(name)}})
+    if doc is None:
+        return None
+    doc.pop("_id", None)
+    doc.pop("search_key", None)
+    return doc
+`);
+}
+
+/**
+ * Intenta insertar un personaje con un id NUEVO, para comprobar el limite de 20.
+ *
+ * Se importa el repository real del servicio (no una copia de la logica) para
+ * que verify compruebe lo que el servicio hara de verdad. Si el documento ya
+ * existe, su `replace_one` lo sobrescribe sin comprobar nada, que es lo que
+ * permite que el seed se repita.
+ */
+async function mongoUpsert(id, name) {
+  const servicio = new URL('../services/onepiece-service/', import.meta.url);
+  const wrapper = `
+import asyncio, json, sys
+sys.path.insert(0, ${JSON.stringify(servicio.pathname)})
+from src.db import connection
+from src.repositories import characters_repository as repo
+
+async def main():
+    try:
+        await repo.upsert({"id": ${id}, "name": ${JSON.stringify(name)}, "race": "Humano"})
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}))
+        await connection.close_pool()
+        return
+    print(json.dumps({"error": None}))
+    await connection.close_pool()
+
+asyncio.run(main())
+`;
+  const salida = execFileSync(
+    new URL('./.venv/bin/python', servicio).pathname,
+    ['-c', wrapper],
+    { encoding: 'utf8', cwd: new URL('./', servicio).pathname },
+  );
+  const lineas = salida.trim().split('\n').filter((l) => l.startsWith('{'));
+  const resultado = JSON.parse(lineas.pop());
+  if (resultado.error) throw new Error(resultado.error);
+  return resultado;
+}
+
+/**
+ * Replica la busqueda del servicio Python.
  *
  * Se escribe aqui (en vez de llamar al microservicio) para que verify siga
- * siendo autonomo y para comprobar el SQL real: exacto, por prefijo y por
- * contenido. El ORDER BY prioriza igual que el repository.
+ * siendo autonomo y para comprobar la consulta real: exacto, por prefijo y por
+ * contenido, con el mismo orden de relevancia que el repository.
  */
 async function searchCharacters(term) {
   const key = normalizeName(term);
   if (!key) return [];
-  return charactersQuery(
-    `SELECT name FROM characters
-      WHERE search_key = $1 OR search_key LIKE $2 OR search_key LIKE $3
-      ORDER BY
-        CASE WHEN search_key = $1 THEN 0 WHEN search_key LIKE $2 THEN 1 ELSE 2 END,
-        name
-      LIMIT 20`,
-    [key, `${key}%`, `%${key}%`],
+  // `mongoQuery` devuelve null cuando Mongo no responde. Se traduce a lista
+  // vacia para que `(await searchCharacters(...))[0]?.name` no reviente al hacer
+  // `[0]` sobre null: la comprobacion fallara con "undefined", que es el
+  // resultado correcto cuando no se pudo consultar nada.
+  return (
+    (await mongoQuery(`
+async def _(col):
+    clave = ${JSON.stringify(key)}
+    docs = await col.find(
+        {"$or": [
+            {"search_key": clave},
+            {"search_key": {"$regex": "^" + re.escape(clave)}},
+            {"search_key": {"$regex": re.escape(clave)}},
+            {"crew.name": {"$regex": re.escape(clave), "$options": "i"}},
+        ]}
+    ).sort("name", 1).to_list(length=20)
+    return [{"name": d["name"]} for d in docs]
+`)) ?? []
   );
 }
 
@@ -96,18 +265,25 @@ function check(label, actual, expected) {
   );
 }
 
-// Se asegura el esquema en ambas bases antes de comprobar. Para One Piece se
-// reutiliza el schema.sql del servicio Python, que es la fuente de verdad.
+/** Igual que check, pero el valor esperado se evalua antes de imprimirlo. */
+async function checkAsync(label, promesa, esperado) {
+  check(label, await promesa, esperado);
+}
+
+// Se asegura el esquema de Pokemon antes de comprobar. One Piece no tiene
+// schema.sql: en MongoDB el esquema son los indices, y se crean al arrancar el
+// servicio. Aqui solo se comprueban los datos.
 await ensurePokemonsSchema();
-const charactersSchema = readFileSync(
-  new URL('../services/onepiece-service/src/db/schema.sql', import.meta.url),
-  'utf8',
-);
-await charactersQuery(charactersSchema);
+
+// El servicio de docentes tambien tiene schema.sql, asi que se asegura igual
+// que Pokemon. Esto deja el arbol de documentos en UTF-8 utilizable aunque se
+// haya apagado la base en algun momento.
+await ensureDocentesSchema();
 
 console.log('== 1. Las bases de datos tienen 20 registros ==');
-check('onepiece', (await charactersQuery('SELECT COUNT(*)::int AS n FROM characters'))[0].n, 20);
-check('pokemon', await pokemonRepo.count(), 20);
+check('onepiece (MongoDB)', await mongoCountCharacters(), 20);
+check('pokemon (PostgreSQL)', await pokemonRepo.count(), 20);
+await checkAsync('docentes (PostgreSQL)', docentesRepo.count(), 20);
 
 console.log('\n== 2. La busqueda es tolerante (sin llamar a la API externa) ==');
 check("buscar 'luffy' encuentra a Luffy", (await searchCharacters('luffy'))[0]?.name, 'Monkey D Luffy');
@@ -118,42 +294,167 @@ check(
   (await searchCharacters('DON QUIJOTE DOFLAMINGO'))[0]?.name,
   'Don Quijote Doflamingo',
 );
+console.log('   -- docentes --');
+// Se comprueba con la MISMA llamada que hace el repositorio real, no con una
+// reimplementacion: asi verify mide lo que el servicio hara de verdad.
+const porGarcia = (await docentesRepo.search('garcia')).map((d) => d.nombre);
+check("buscar 'garcia' (sin tilde) encuentra a alguien", porGarcia.length > 0, true);
+check(
+  "buscar 'garcia' y 'Garcia' dan el mismo resultado",
+  (await docentesRepo.search('GARCÍA')).map((d) => d.nombre).join('|'),
+  porGarcia.join('|'),
+);
+// Dos docentes comparten el apellido, asi que esta comprueba tambien el ORDEN:
+// el repositorio ordena por relevancia (exacto, prefijo, contenido) y luego por
+// nombre, de modo que la respuesta es estable entre llamadas.
+check(
+  'docentes: buscar por un fragmento a mitad de nombre, por orden',
+  (await docentesRepo.search('rios')).map((d) => d.nombre).join(' | '),
+  'Ana Beatriz Ríos Álvarez | Ever Nelson Silvera Ríos',
+);
+check(
+  'docentes: con tilde y sin tilde sale lo mismo',
+  (await docentesRepo.search('GAVILÁN')).map((d) => d.nombre).join('|'),
+  (await docentesRepo.search('gavilan')).map((d) => d.nombre).join('|'),
+);
 
 console.log('\n== 3. El mapa de razas funciona con el nombre real de la API ==');
-const chopper = (
-  await charactersQuery(
-    "SELECT race, race_estimated FROM characters WHERE name = 'Tony-Tony Chopper'",
-  )
-)[0];
+const chopper = await mongoOne('Tony-Tony Chopper');
 check('raza de Tony-Tony Chopper', chopper?.race, 'Humano-Reno (fruta Zoan)');
-check('no marcado como estimado', chopper?.race_estimated, false);
+check('no marcado como estimado', chopper?.raceEstimated, false);
 
-console.log('\n== 4. El limite de 20 lo impone el motor ==');
-// Se intenta insertar un id nuevo con el minimo de columnas obligatorias. Si el
-// trigger funciona, PostgreSQL lanza una excepcion y el INSERT no se produce.
-let triggerOk = false;
+console.log('\n== 4. El limite de 20 no deja pasar el registro 21 ==');
+// Antes esto lo imponia un trigger de PostgreSQL. MongoDB no tiene triggers, asi
+// que el limite se comprueba en el repository ANTES de insertar un documento
+// nuevo. Se replica esa comprobacion aqui para confirmar que el limite sigue
+// vigente: un id que ya existe SI se puede reescribir (asi el seed es
+// idempotente), uno nuevo no.
+let limiteOk = false;
 try {
-  await charactersQuery(
-    "INSERT INTO characters (id, name, search_key) VALUES (999999, 'Personaje De Prueba', 'personajedeprueba')",
-  );
+  await mongoUpsert(999999, 'Personaje De Prueba');
 } catch (error) {
-  triggerOk =
-    String(error.message).includes('20') ||
-    String(error.message).includes('characters_max_20');
+  limiteOk = String(error.message).includes('20');
 }
-check('el trigger bloquea el registro 21', triggerOk, true);
-check('siguen siendo 20', (await charactersQuery('SELECT COUNT(*)::int AS n FROM characters'))[0].n, 20);
+check('no se puede insertar el registro 21', limiteOk, true);
+check('siguen siendo 20', await mongoCountCharacters(), 20);
+
+// Docentes SI es PostgreSQL, y ahi el limite vuelve a ser un trigger de la base
+// de datos (enforce_docentes_limit). Se comprueba con el repository real: un
+// id que ya existe se puede reescribir (asi el seed es idempotente) y uno nuevo
+// no cabe.
+let limiteDocentesOk = false;
+try {
+  await docentesRepo.upsert({
+    id: 999999,
+    nombre: 'Docente De Prueba',
+    cargo: 'Profesor',
+    departamento: 'Prueba',
+    carrera: 'Prueba',
+    facultad: 'Prueba',
+    email: 'prueba@uninpahu.edu.py',
+    resumen: 'Resumen de prueba.',
+    biografia: 'Biografia de prueba.',
+    areas: [],
+    formacion: [],
+  });
+} catch (error) {
+  limiteDocentesOk = String(error.message).includes('20');
+}
+check('docentes: no se puede insertar el registro 21', limiteDocentesOk, true);
+await checkAsync('docentes: siguen siendo 20', docentesRepo.count(), 20);
 
 console.log('\n== 5. Coherencia de datos ==');
-const sample = (await charactersQuery('SELECT name, race FROM characters ORDER BY id LIMIT 1'))[0];
+const sample = await mongoOne('Monkey D Luffy');
 check('nombre presente', typeof sample?.name === 'string' && sample.name.length > 0, true);
 check('raza presente', typeof sample?.race === 'string', true);
 const pika = (await pokemonRepo.findAll()).find((p) => p.name === 'pikachu');
 check('tipos de pikachu', Array.isArray(pika?.types) && pika.types.length > 0, true);
 check('movimientos de pikachu', Array.isArray(pika?.moves) && pika.moves.length > 0, true);
 
-await charactersPool.end();
+// La quinta pestana solo muestra un RESUMEN y la ficha completa muestra la
+// BIOGRAFIA. Si los dos campos se confundieran, la pestana se veria igual de
+// larga que la ficha y el boton "Leer mas" no tendria sentido.
+const primerDocente = (await docentesRepo.findAll())[0];
+check('docentes: resumen presente', typeof primerDocente?.resumen === 'string' && primerDocente.resumen.length > 0, true);
+check('docentes: biografia presente', typeof primerDocente?.biografia === 'string' && primerDocente.biografia.length > 0, true);
+check(
+  'docentes: el resumen es mas corto que la biografia',
+  primerDocente.resumen.length < primerDocente.biografia.length,
+  true,
+);
+check('docentes: carrera presente', typeof primerDocente?.carrera === 'string' && primerDocente.carrera.length > 0, true);
+check('docentes: email institucional', String(primerDocente?.email || '').endsWith('@uninpahu.edu.py'), true);
+
+// Las facetas alimentan la fila de filtros de la pestana. Si un valor viniera
+// vacio o duplicado, apareceria un chip en blanco o repetido.
+const facetas = await docentesRepo.findFacetas();
+check('docentes: hay facultades', facetas.facultad.length > 0, true);
+check('docentes: hay carreras', facetas.carrera.length > 0, true);
+check('docentes: hay departamentos', facetas.departamento.length > 0, true);
+check(
+  'docentes: las facetas no tienen valores vacios',
+  [...facetas.facultad, ...facetas.carrera, ...facetas.departamento].filter((v) => !String(v || '').trim()).length,
+  0,
+);
+
+// findById es el endpoint de la ficha (path param). Un id que no existe tiene
+// que devolver null y NO una fila vacia: si devolviera {}, el frontend
+// distinguiria "no existe" de "existe pero sin datos".
+check('docentes: id inexistente devuelve null', await docentesRepo.findById(999999), null);
+
+// ---------------------------------------------------------------------------
+// REGRESIONES DEL FILTRADO
+//
+// Estas cuatro comprobaciones estan aqui porque los dos bugs que corrigieron
+// eran invisibles: el servicio respondia 200 con datos que PARECIAN bien.
+//
+// 1) Un `?limite` ausente tiene que devolver la pagina entera. `URLSearchParams
+//    .get()` devuelve `null` y no `undefined`, y `Number(null)` es 0, que es un
+//    entero valido: sin la comprobacion del null, el limite se=colaba como 0 y
+//    quedaba en 1, y la app recibia una sola tarjeta con `total` de 20. Nadie lo
+//    ve como un error, se ve como "solo hay un docente".
+// ---------------------------------------------------------------------------
+const listadoSinFiltros = await docentesRepo.findMany({
+  q: '',
+  carrera: '',
+  departamento: '',
+  limite: 50,
+  offset: 0,
+});
+check('docentes: sin filtros devuelve los 20', listadoSinFiltros.length, 20);
+
+// El filtro de carrera se compara contra una columna YA NORMALIZADA. Antes se
+// comparaba el valor normalizado contra el texto crudo con `ILIKE`, que no
+// ignora los acentos: "Ingeniería en Sistemas" jamas encontraba
+// "ingenieria en sistemas" y el filtro devolvia CERO resultados SIEMPRE. Lo que
+// lo hace invisible es que el endpoint no daba error: devolvia 200 con total 0.
+const carreraReal = primerDocente.carrera;
+check('docentes: la carrera del ejemplo existe', typeof carreraReal === 'string' && carreraReal.length > 0, true);
+const conAcento = await docentesRepo.countMany({ q: '', carrera: carreraReal, departamento: '' });
+const sinAcento = await docentesRepo.countMany({ q: '', carrera: 'ingenieria', departamento: '' });
+check('docentes: filtrar por carrera SIN tilde encuentra', sinAcento > 0, true);
+check('docentes: con tilde y sin tilde, el mismo numero', conAcento, sinAcento > 0 ? conAcento : 0);
+
+// Y el filtro tiene que ser por FRAGMENTO, no de igualdad: "Ingenieria" tiene que
+// encontrar tambien "Ingeniería en Sistemas". Sin esto, elegir una carrera del
+// chip no obligaria al usuario a escribir el nombre entero.
+check(
+  'docentes: el filtro de carrera es por fragmento',
+  (await docentesRepo.findMany({ q: '', carrera: 'ingenieria', departamento: '', limite: 50, offset: 0 }))
+    .every((d) => (d.carrera || '').toLowerCase().includes('ingenier')),
+  true,
+);
+
+// El mismo criterio para el buscador de texto y el filtro de carrera juntos.
+check(
+  'docentes: texto + carrera combinados',
+  (await docentesRepo.findMany({ q: 'ana', carrera: 'ingenieria', departamento: '', limite: 50, offset: 0 }))
+    .every((d) => (d.nombre || '').toLowerCase().includes('ana') && (d.carrera || '').toLowerCase().includes('ingenier')),
+  true,
+);
+
 await closePokemonsPool();
+await closeDocentesPool();
 
 console.log(failures === 0 ? '\nTodo correcto.' : `\n${failures} verificacion(es) fallaron.`);
 process.exit(failures === 0 ? 0 : 1);

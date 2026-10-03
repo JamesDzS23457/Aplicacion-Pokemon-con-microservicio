@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// LEVANTAR LOS 3 PROCESOS A LA VEZ  (desarrollo)
+// LEVANTAR LOS 4 PROCESOS A LA VEZ  (desarrollo)
 //
 //   node scripts/dev.js
 //
@@ -13,7 +13,7 @@
 // de su entorno virtual (.venv), que es donde estan instaladas sus
 // dependencias. Si el venv no existe, se cae a `python3` y se avisa.
 //
-// Ctrl+C detiene los tres.
+// Ctrl+C detiene los cuatro.
 // ---------------------------------------------------------------------------
 
 import { spawn } from 'node:child_process';
@@ -70,6 +70,13 @@ const PROCESSES = [
     args: ['-m', 'uvicorn', 'src.main:app', '--host', '0.0.0.0', '--port', '4002'],
     cwd: onepieceDir,
     color: '\x1b[35m',
+  },
+  {
+    name: 'docentes-service',
+    command: 'node',
+    args: ['src/index.js'],
+    cwd: path.join(root, 'services/docentes-service'),
+    color: '\x1b[32m',
   },
   {
     name: 'gateway',

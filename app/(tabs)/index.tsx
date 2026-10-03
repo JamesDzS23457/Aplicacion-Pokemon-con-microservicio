@@ -7,9 +7,10 @@
 // ---------------------------------------------------------------------------
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
-import { Image, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { Image, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   EmptyState,
   FadeIn,
@@ -18,6 +19,7 @@ import {
   LoadingCard,
   Notice,
   Pill,
+  RefreshButton,
   ScreenHeader,
   SearchBar,
   SectionTitle,
@@ -28,9 +30,26 @@ import { colors, pokemonTypeColors, radius, shadows, spacing } from '../../lib/t
 
 export default function HomeScreen() {
   const [nombre, setNombre] = useState('');
-  const { pokemon, cargando, mensaje, tono, buscarPokemon } = usePokemon();
+  const { pokemon, cargando, mensaje, tono, ultimaBusqueda, buscarPokemon, refrescar } = usePokemon();
   const buscar = () => buscarPokemon(nombre);
   const tipos = (pokemon?.types?.map((t) => t.type?.name).filter(Boolean) as string[]) ?? [];
+
+  // Al volver a esta pestaña se vuelve a consultar el Pokemon que ya se estaba
+  // viendo. Motivo: si alguien edita la base de datos mientras el usuario esta
+  // en otra pantalla, al regresar aqui debe ver el dato nuevo y no el que se
+  // quedo congelado en memoria.
+  //
+  // `useCallback` es obligatorio porque `useFocusEffect` vuelve a ejecutar el
+  // efecto en cada render si recibe una funcion nueva; sin eso entraria en un
+  // bucle de peticiones.
+  useFocusEffect(
+    useCallback(() => {
+      if (ultimaBusqueda) refrescar();
+      // Solo al entrar en la pantalla: reejecutarlo en cada render pediria los
+      // datos sin parar.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ultimaBusqueda]),
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -39,6 +58,16 @@ export default function HomeScreen() {
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        // Deslizar hacia abajo recarga lo que hay en pantalla. Es la segunda via
+        // para ver un cambio hecho en la base de datos, sin usar el boton.
+        refreshControl={
+          <RefreshControl
+            refreshing={cargando}
+            onRefresh={refrescar}
+            colors={[colors.pokemon]}
+            tintColor={colors.pokemon}
+          />
+        }
       >
         <ScreenHeader
           title="Pokedex"
@@ -56,6 +85,17 @@ export default function HomeScreen() {
           accent={colors.pokemon}
           loading={cargando}
         />
+
+        {pokemon && !cargando ? (
+          <View style={styles.refreshRow}>
+            <RefreshButton
+              onPress={refrescar}
+              accent={colors.pokemon}
+              loading={cargando}
+              disabled={!ultimaBusqueda}
+            />
+          </View>
+        ) : null}
 
         {mensaje ? <Notice text={mensaje} tone={tono} /> : null}
 
@@ -185,6 +225,13 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     padding: spacing.xl,
     paddingBottom: spacing.xxl,
+  },
+
+  // Margen bajo el campo de busqueda para que el boton de refresco no quede
+  // pegado a el.
+  refreshRow: {
+    marginTop: spacing.md,
+    marginBottom: spacing.lg,
   },
 
   hero: {

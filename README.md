@@ -1,11 +1,18 @@
 # APP_Pokemon
 
 Aplicación web Expo (SDK 57) con Pokédex y buscador de personajes de One Piece.
-Los datos se sirven desde **microservicios propios** backed por **PostgreSQL en
-Supabase**, que se cargaron una vez desde las APIs públicas de PokéAPI y One Piece.
+Los datos se sirven desde **microservicios propios**, cada uno con **su propia base
+de datos**, que se cargaron una vez desde las APIs públicas de PokéAPI y One Piece.
 
-Cada microservicio está en un lenguaje distinto: **Pokémon en Node.js/Express** y
-**One Piece en Python/FastAPI**. Los dos publican su documentación **Swagger**.
+Cada microservicio se diferencia en **dos** cosas, que es lo que pide el
+enunciado:
+
+| Microservicio | Lenguaje | Base de datos |
+|---|---|---|
+| Pokémon | Node.js / Express | **Relacional**: PostgreSQL en Supabase |
+| One Piece | Python / FastAPI | **No relacional**: MongoDB en Atlas |
+
+Los dos publican su documentación **Swagger**.
 
 ## Arquitectura
 
@@ -30,8 +37,9 @@ Cada microservicio está en un lenguaje distinto: **Pokémon en Node.js/Express*
        │                 │
        ▼                 ▼
 ┌──────────────┐  ┌──────────────┐
-│ Supabase/    │  │ Supabase/    │  PostgreSQL, 20 filas cada una
-│ postgres (1) │  │ postgres (2) │  fuente de verdad
+│ Supabase/    │  │  MongoDB     │  20 registros cada una
+│ postgres     │  │  (Atlas)     │  fuente de verdad
+│  RELACIONAL  │  │ NO RELACIONAL │
 └──────────────┘  └──────▲───────┘
                         │ solo escritura, durante el seed
               ┌─────────┴──────────┐
@@ -97,24 +105,51 @@ npm start          # o: npm run web
 
 ## Base de datos
 
-Dos bases de datos PostgreSQL, una por microservicio, alojadas en Supabase.
+Dos bases de datos, una por microservicio, y de **tipo distinto** a propósito:
 
-El límite de 20 registros lo impone un **trigger de la base de datos**, no una
-validación en JavaScript: es PostgreSQL el que lo garantiza, así que ningún
-camino de escritura puede saltárselo.
+- **Pokémon → PostgreSQL en Supabase** (relacional). El límite de 20 lo impone un
+  **trigger de la base de datos**, no una validación en el código: es
+  PostgreSQL el que lo garantiza, así que ningún camino de escritura puede
+  saltárselo.
+- **One Piece → MongoDB en Atlas** (no relacional). Guarda *documentos*, no
+  filas, y por eso `crew` y `fruit` se guardan **anidados** en lugar de
+  aplanados en columnas. MongoDB no tiene triggers, así que el mismo límite de
+  20 se comprueba en `characters_repository.py` **antes** de insertar un
+  documento nuevo, y solo entonces: reejecutar el seed con los mismos ids nunca
+  se bloquea a sí mismo.
 
-Para verlas: panel de Supabase → Table Editor.
+Para verlas: panel de **Supabase** → Table Editor, y panel de **MongoDB Atlas**
+→ Collections.
 
-### Desarrollo local con Docker (sin Supabase)
+### Desarrollo local con Docker (sin Supabase ni Atlas)
 
 ```bash
+# Pokémon necesita un PostgreSQL
 docker run -d --name pg-local -e POSTGRES_PASSWORD=testpass \
   -e POSTGRES_USER=postgres -p 5432:5432 postgres:16-alpine
 docker exec pg-local psql -U postgres -c "CREATE DATABASE pokemon;"
-docker exec pg-local psql -U postgres -c "CREATE DATABASE onepiece;"
+
+# One Piece necesita un MongoDB
+docker run -d --name mongo-local -p 27017:27017 mongo:7
 ```
 
-Y en `.env`: `DATABASE_SSL=false` (un Postgres local no tiene SSL).
+Y en `.env`:
+
+```bash
+POKEMON_DATABASE_URL=postgresql://postgres:testpass@localhost:5432/pokemon
+DATABASE_SSL=false                     # un Postgres local no tiene SSL
+ONEPIECE_MONGODB_URI=mongodb://localhost:27017
+```
+
+Para cambiar de base se usaron estas variables:
+
+| Variable | Base |
+|---|---|
+| `POKEMON_DATABASE_URL` | PostgreSQL de Pokémon (o `DATABASE_URL`) |
+| `ONEPIECE_MONGODB_URI` | MongoDB de One Piece (o `MONGODB_URI`) |
+
+Las dos se cargan en los **módulos de conexión** de cada servicio, así que da
+igual desde dónde se lance el proceso.
 
 ## API del gateway
 
@@ -193,13 +228,14 @@ backend/
 | Capa | Responsabilidad |
 |---|---|
 | `routes/` (Node) · `routers/` (Python) | HTTP. Traduce request/response. Sin lógica. |
-| `services/` | Reglas de negocio y validaciones. Sin SQL. |
-| `repositories/` | **Todo el SQL vive aquí.** |
+| `services/` | Reglas de negocio y validaciones. Sin acceso a la base. |
+| `repositories/` | **Única capa que habla con la base de datos** (SQL en Pokémon, consultas de MongoDB en One Piece). |
 | `external/` | **Única capa que hace peticiones a internet.** |
 
-Aislar el SQL en `repositories/` es lo que permitió cambiar de SQLite a
-PostgreSQL y, después, reescribir el servicio de One Piece de Node a Python sin
-tocar el resto del sistema.
+Aislar el acceso a datos en `repositories/` es lo que permitió cambiar de SQLite
+a PostgreSQL, reescribir el servicio de One Piece de Node a Python y después
+migrar ese mismo servicio a MongoDB, **sin tocar routers, servicios ni el
+contrato HTTP**. La API pública es idéntica en los tres casos.
 
 ## Interfaz
 

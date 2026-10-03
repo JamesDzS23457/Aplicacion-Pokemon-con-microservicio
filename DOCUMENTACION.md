@@ -11,7 +11,7 @@ Inventario de datos cargados: `DATOS.md`.
 
 ```
 App (Expo)  ->  Gateway :3000  ->  pokemon-service :4001 (Node)     ->  PostgreSQL (Supabase)
-   frontend      única URL         onepiece-service :4002 (Python)  ->  PostgreSQL (Supabase)
+   frontend      única URL         onepiece-service :4002 (Python)  ->  MongoDB (Atlas)
                                  (solo el seed llama a las APIs externas)
 ```
 
@@ -82,22 +82,24 @@ microservicios. Cada microservicio tiene **su propia base de datos**. Internet
 - `src/lib/log.js` - logs del microservicio.
 - `package.json` y `package-lock.json` - dependencias.
 
-## onepiece-service (Python / FastAPI + PostgreSQL, puerto 4002)
+## onepiece-service (Python / FastAPI + MongoDB, puerto 4002)
 
 Mismo contrato HTTP que el servicio Node anterior, para que el gateway y el
-frontend no cambien.
+frontend no cambien. Es el servicio **no relacional** del proyecto: guarda
+documentos en MongoDB Atlas, mientras que Pokémon sigue en PostgreSQL.
 
-- `src/main.py` - app FastAPI; en el `lifespan` crea el esquema, sirve Swagger
+- `src/main.py` - app FastAPI; en el `lifespan` crea los índices, sirve Swagger
   (`/docs`, `/redoc`, `/openapi.json`) y traduce `ApiError` a `{"error": ...}`.
 - `src/routers/characters.py` - capa HTTP de `/api/characters` y modelos de
   respuesta para Swagger.
 - `src/services/characters_service.py` - reglas de negocio; decide 400 vs 404.
-- `src/repositories/characters_repository.py` - **único lugar con SQL**; arma la
-  búsqueda y aplana/anida la fila (`crew`, `fruit`, `image`, `raceEstimated`).
+- `src/repositories/characters_repository.py` - **única capa que habla con la
+  base**; aquí están las consultas de MongoDB. Arma la búsqueda con regex y
+  guarda `crew` y `fruit` **anidados**, que es lo que hace natural esta base.
 - `src/models/character.py` - modelos Pydantic; definen el **contrato** con el
   frontend y alimentan Swagger.
-- `src/db/connection.py` - pool de PostgreSQL con `asyncpg`.
-- `src/db/schema.sql` - tabla `characters` y trigger del límite.
+- `src/db/connection.py` - cliente asíncrono de `pymongo`, carga el `.env` y
+  crea los índices (`ensure_indexes`).
 - `src/external/onepiece_client.py` - **llama a la API de One Piece**; solo seed.
 - `src/external/jikan_client.py` - resuelve las imágenes (Jikan/MyAnimeList);
   solo seed.
@@ -119,8 +121,13 @@ frontend no cambien.
 - `backend/scripts/seed.js` - ejecuta el seed de Pokemon (crea esquema y carga).
 - `backend/scripts/seed-pokemon.js` - lista de los 20 Pokemon y su carga desde
   PokeAPI.
-- `backend/scripts/verify.js` - verificaciones: 20 registros, búsqueda y que el
-  trigger imponga el límite (habla directo con PostgreSQL).
+- `backend/scripts/verify.js` - verificaciones: 20 registros en cada base,
+  búsqueda tolerante, mapa de razas, límite de 20 y coherencia de datos. Habla
+  directo con las dos bases (PostgreSQL desde Node, MongoDB a través del venv de
+  Python) sin levantar ningún servicio.
+- `backend/scripts/migrate-characters-to-mongodb.js` - copió los 20 personajes
+  de la base antigua de One Piece (PostgreSQL) a MongoDB. Herramienta de una
+  sola vez; se puede volver a ejecutar sin duplicar nada.
 - `backend/scripts/block-external.js` - bloquea `fetch` externo (preload); se usa
   en la prueba de aislamiento.
 - `backend/scripts/generate-datos.js` - regenera `DATOS.md` desde el gateway.
@@ -176,7 +183,10 @@ npm run backend:verify      # comprobar BD, búsqueda y límite de 20
 
 ## Qué requisito cubre cada pieza
 
-- Base de datos relacional propia -> PostgreSQL en Supabase (una por servicio).
+- Base de datos **relacional** propia -> PostgreSQL en Supabase para Pokémon.
+- Base de datos **no relacional** propia -> MongoDB Atlas para One Piece.
+  Cada microservicio tiene la suya, y de un tipo distinto, que es lo que pide
+  el enunciado.
 - Microservicio en Node.js -> `backend/services/pokemon-service`.
 - Microservicio en Python -> `backend/services/onepiece-service` (FastAPI).
 - Documentado con Swagger -> `/docs` en ambos microservicios.

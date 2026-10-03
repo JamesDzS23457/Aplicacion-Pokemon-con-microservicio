@@ -118,6 +118,54 @@ export function SearchBar({
 }
 
 // ---------------------------------------------------------------------------
+// Boton "Actualizar": vuelve a consultar el dato que ya esta en pantalla.
+//
+// Existe porque la app solo preguntaba al gateway cuando el usuario pulsaba
+// "Buscar". Si alguien cambia un registro en la base de datos, la pantalla
+// seguia mostrando el valor anterior hasta que se escribia el nombre otra vez.
+// Este boton llama a `refrescar()` del contexto, que repite la ultima busqueda.
+//
+// Se oculta cuando no hay nada que refrescar (`disabled` + sin icono girando),
+// para no ofrecer un control que no hace nada.
+// ---------------------------------------------------------------------------
+export function RefreshButton({
+  onPress,
+  accent,
+  loading,
+  disabled,
+  label = 'Actualizar',
+}: {
+  onPress: () => void;
+  accent: string;
+  loading: boolean;
+  disabled?: boolean;
+  label?: string;
+}) {
+  const inactivo = disabled || loading;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={inactivo}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [
+        styles.refreshButton,
+        { borderColor: accent },
+        pressed && !inactivo && styles.pressed,
+        inactivo && styles.refreshButtonDisabled,
+      ]}
+    >
+      {loading ? (
+        <ActivityIndicator size="small" color={accent} />
+      ) : (
+        <Ionicons name="refresh" size={16} color={accent} />
+      )}
+      <Text style={[styles.refreshText, { color: accent }]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Titulo de seccion con una barrita de color a la izquierda. "right" permite
 // mostrar un contador a la derecha (por ejemplo, el numero de movimientos).
 // ---------------------------------------------------------------------------
@@ -353,6 +401,27 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  // Boton de refresco: contorno fino con el color de acento de la pantalla, para
+  // que se lea como accion secundaria y no compita con el boton de buscar.
+  refreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    backgroundColor: colors.surface,
+  },
+  refreshButtonDisabled: {
+    opacity: 0.5,
+  },
+  refreshText: {
+    fontSize: type.small,
+    fontWeight: '600',
   },
 
   sectionTitle: {

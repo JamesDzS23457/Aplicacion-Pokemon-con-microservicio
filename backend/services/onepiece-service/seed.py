@@ -7,8 +7,8 @@
 #
 #   cd backend/services/onepiece-service && python seed.py
 #
-# Es idempotente: se puede ejecutar N veces sin duplicar filas, porque el
-# repository hace upsert por id en lugar de INSERT.
+# Es idempotente: se puede ejecutar N veces sin duplicar personajes, porque el
+# repository hace upsert por id en lugar de un INSERT a secas.
 #
 # Port del antiguo scripts/seed-characters.js. Se traduce al espanol durante la
 # carga: la descripcion larga de la fruta se deja en su idioma original porque
@@ -75,8 +75,8 @@ def _nested(details, key, field):
 
 async def seed_characters():
     """Descarga los 20 personajes, los enriquece y los guarda en la base."""
-    # La tabla debe existir antes de insertar.
-    await connection.ensure_schema()
+    # Los indices deben existir antes de insertar.
+    await connection.ensure_indexes()
 
     # 1. Descargar la lista completa una sola vez.
     lista = await onepiece_client.list_characters()
@@ -144,7 +144,7 @@ async def main():
     total = await repo.count()
     print(f"\nonepiece: {total} personajes")
 
-    # Cerrar el pool: sin esto el proceso se queda vivo esperando conexiones.
+    # Cerrar el cliente: sin esto el proceso se queda vivo esperando conexiones.
     await connection.close_pool()
 
     # Si la base quedo vacia, algo fallo de verdad: salir con codigo 1 para que

@@ -11,13 +11,16 @@
 #               documentacion OpenAPI/Swagger sola, que es un requisito.
 # uvicorn    -> el servidor ASGI que ejecuta la app. [standard] trae el
 #               recargado en caliente y el soporte de websockets.
-# asyncpg    -> driver de PostgreSQL ASINCRONO. Se eligio asyncpg y no psycopg
-#               porque FastAPI es async: psycopg sincrono bloquearia el event
-#               loop y el servicio atenderia una peticion a la vez.
+# pymongo    -> driver de MongoDB. Este servicio es el NO RELACIONAL del
+#               proyecto (el de Pokemon sigue en PostgreSQL): se guardan
+#               documentos, no filas. Se usa su cliente asincrono
+#               (AsyncMongoClient) porque FastAPI es async; el cliente
+#               sincrono bloquearia el event loop y el servicio atenderia una
+#               peticion a la vez.
 # httpx      -> cliente HTTP asincrono. Lo usa SOLO el seed (carpeta
 #               external/), nunca el servicio en tiempo de peticion.
 # ---------------------------------------------------------------------------
 fastapi>=0.115
 uvicorn[standard]>=0.30
-asyncpg>=0.30
+pymongo>=4.9
 httpx>=0.27

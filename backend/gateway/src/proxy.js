@@ -57,7 +57,22 @@ export async function proxy(serviceUrl, path, { method = 'GET', body } = {}) {
   try {
     const response = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // Se pide explicitamente que la respuesta NO se guarde en ningun cache
+        // intermedio (el edge de Render, proxies, la cache del navegador).
+        //
+        // Sin esto, Express responde con un ETag debil y NINGUN Cache-Control, y
+        // cualquier capa intermedia puede aplicar "heuristic caching": servir un
+        // `GET /api/pokemon` viejo sin preguntar al servicio. El sintoma es
+        // exactamente "cambie el dato en la base y la app sigue mostrando el
+        // anterior". Los `POST /search` no se cachean, pero los listados si.
+        //
+        // `no-cache` obliga a revalidar contra el origen en cada peticion, que
+        // es lo que queremos: la respuesta refleja el estado actual de la base.
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
       // undefined = sin cuerpo (GET). JSON.stringify(undefined) seria "undefined"
       // literal, asi que se comprueba antes.
       body: body === undefined ? undefined : JSON.stringify(body),

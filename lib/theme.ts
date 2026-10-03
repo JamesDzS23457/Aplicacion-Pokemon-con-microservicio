@@ -6,9 +6,10 @@
 // quedaban inconsistentes. Con tokens, cambiar un color se hace en un solo
 // lugar y las cuatro pantallas se mantienen coherentes.
 //
-// Se separa por "acento": Pokemon usa azul, One Piece usa coral. Cada pantalla
+// Se separa por "acento": Pokemon usa azul, One Piece usa coral y Docentes usa
+// el verde de Uninpahu. Cada pantalla
 // recibe su acento y su version suave (para fondos de iconos y fichas), de
-// modo que el mismo componente se ve bien en ambas secciones.
+// modo que el mismo componente se ve bien en las tres secciones.
 // ---------------------------------------------------------------------------
 
 import { Platform } from 'react-native';
@@ -36,6 +37,15 @@ export const colors = {
   onepiece: '#e85d4a',
   onepieceDark: '#b23c2f',
   onepieceSoft: '#fdeae6',
+
+  // Acento Docentes (verde institucional de Uninpahu).
+  //
+  // `docentesDark` tambien se usa para texto pequeno sobre `docentesSoft`, asi
+  // que tiene que contrastar contra ese fondo y no solo contra el blanco: por
+  // eso el tono oscuro esta bastante mas cerrado que el acento.
+  docentes: '#1f7a4d',
+  docentesDark: '#0f4c2e',
+  docentesSoft: '#e4f3ea',
 
   // Estados.
   success: '#2e8b57',
@@ -84,6 +94,17 @@ export const shadows = {
     shadowOffset: { width: 0, height: 3 },
     elevation: 1,
   },
+};
+
+// Color por facultad, para las etiquetas de la lista de docentes. Si una
+// facultad no esta en el mapa se cae al acento verde y no a gris: asi queda
+// claro que es un dato sin color propio, no un estado.
+export const facultadColors: Record<string, string> = {
+  ingenieria: '#1f7a4d',
+  exacta: '#0f6fb0',
+  economia: '#b7791f',
+  social: '#8a4bbd',
+  salud: '#c0392b',
 };
 
 // Colores oficiales de los tipos de Pokemon. Se usan para las fichas de tipo.
