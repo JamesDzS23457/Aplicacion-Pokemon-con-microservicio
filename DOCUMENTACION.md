@@ -115,16 +115,61 @@ documentos en MongoDB Atlas, mientras que Pokémon sigue en PostgreSQL.
 - `requirements.txt` - dependencias de Python.
 - `src/**/__init__.py` - marcan cada carpeta como paquete Python.
 
+## docentes-service (Node / `node:http` + PostgreSQL, puerto 4003)
+
+El tercero. Es el que alimenta la quinta pestaña de la app (Docentes de
+Uninpahu) y el único que está escrito **sin ningún framework de HTTP**.
+
+- `src/index.js` - arranque; lee `PORT` y levanta el servidor.
+- `src/server.js` - la tubería de la petición sobre `node:http`: CORS, `405` si
+  no es `GET`, `404` si la ruta no existe y el manejador dentro de un `try/catch`.
+- `src/http/router.js` - enrutado escrito a mano (admite `:param` y comodín `*`;
+  gana la primera ruta que coincide).
+- `src/http/respond.js` - `json()`, `html()`, cabeceras de CORS y
+  `clasificarError`. **Nunca lee el cuerpo de la petición.**
+- `src/routes/docentes.routes.js` - capa HTTP. Todas las rutas son `GET`.
+- `src/services/docentes.service.js` - reglas de negocio y validación de los
+  query params.
+- `src/repositories/docentes.repository.js` - **único lugar con SQL** (listar con
+  filtros, por id, buscar, facetas, upsert).
+- `src/db/connection.js` - pool de PostgreSQL (`pg`) y `ensureSchema`.
+- `src/db/schema.sql` - tabla `docentes`, columnas `carrera_key` y
+  `departamento_key` (normalizadas, para filtrar sin que importe la tilde),
+  y el trigger que impone el límite.
+- `src/docs/openapi.js` - el contrato OpenAPI 3.0.3 **escrito a mano**.
+- `src/docs/documentacion.routes.js` - `/docs` (Swagger UI desde un CDN) y
+  `/openapi.json`.
+- `src/lib/normalize.js`, `src/lib/errors.js`, `src/lib/log.js` - utilidades.
+- `package.json` y `package-lock.json` - **una sola dependencia: `pg`**. No hay
+  Express ni ninguna librería de terceros más.
+
+### Cómo cumple los dos requisitos de este servicio
+
+**Agnóstico.** Lo único que se importa de fuera de Node es el driver de la base
+de datos (`pg`), y es inevitable: Node no trae un cliente de PostgreSQL. El
+servidor HTTP, el enrutado, el CORS, el manejo de errores y la documentación
+OpenAPI están escritos a mano.
+
+**Solo path params y query params.** El servicio es de **solo lectura**: no
+tiene ni un verbo `POST`, `PUT`, `PATCH` o `DELETE`, y `src/server.js` no lee
+el cuerpo de las peticiones. La restricción se cumple por construcción, no por
+disciplina.
+
 ## Scripts del backend
 
-- `backend/scripts/dev.js` - levanta los 3 procesos a la vez (Node + Python).
+- `backend/scripts/dev.js` - levanta los 4 procesos a la vez (Node + Python).
 - `backend/scripts/seed.js` - ejecuta el seed de Pokemon (crea esquema y carga).
 - `backend/scripts/seed-pokemon.js` - lista de los 20 Pokemon y su carga desde
   PokeAPI.
+- `backend/scripts/docentes-datos.js` - los docentes cargados. **Es el
+  archivo que hay que editar para poner datos reales.**
+- `backend/scripts/seed-docentes.js` - los carga (TRUNCATE + upsert). No necesita
+  internet (a diferencia de los otros dos seeds).
 - `backend/scripts/verify.js` - verificaciones: 20 registros en cada base,
   búsqueda tolerante, mapa de razas, límite de 20 y coherencia de datos. Habla
-  directo con las dos bases (PostgreSQL desde Node, MongoDB a través del venv de
-  Python) sin levantar ningún servicio.
+  directo con las tres bases (PostgreSQL desde Node, MongoDB a través del venv de
+  Python) sin levantar ningún servicio. Si MongoDB no responde avisa y sigue con
+  las otras dos, en vez de abortar entero.
 - `backend/scripts/migrate-characters-to-mongodb.js` - copió los 20 personajes
   de la base antigua de One Piece (PostgreSQL) a MongoDB. Herramienta de una
   sola vez; se puede volver a ejecutar sin duplicar nada.
@@ -141,12 +186,13 @@ documentos en MongoDB Atlas, mientras que Pokémon sigue en PostgreSQL.
 - `package.json` - scripts de npm del proyecto (app + `backend:*`).
 - `backend/package.json` - scripts del backend (gateway, servicios, seed,
   verify, offline-test, setup).
-- `render.yaml` - despliegue de los 3 servicios web en Render.
+- `render.yaml` - despliegue de los 4 servicios web en Render.
 - `.env.example` - plantilla de variables (gateway y bases de datos).
 - `.env.production` - URL pública del gateway para el build de Vercel.
 - `.gitignore` - lo que no se versiona.
 - `README.md` - documentación técnica detallada (montaje, API, despliegue).
-- `DATOS.md` - inventario de los 20 Pokemon y los 20 personajes.
+- `DATOS.md` - inventario de los 20 Pokemon, los 20 personajes y los 20
+  docentes.
 - `DOCUMENTACION.md` - este mapa.
 - `LICENSE` - licencia.
 - `package-lock.json` - versiones exactas de las dependencias del frontend.
@@ -163,11 +209,18 @@ documentos en MongoDB Atlas, mientras que Pokémon sigue en PostgreSQL.
 | GET | `/api/characters` | Lista los 20 personajes. |
 | GET | `/api/characters/:id` | Un personaje por id. |
 | POST | `/api/characters/search` | Busca por nombre; body `{ "name": "luffy" }`. |
+| GET | `/api/docentes` | Lista los docentes. Filtros por **query params**: `q`, `carrera`, `departamento`, `limite`, `pagina`. |
+| GET | `/api/docentes/facetas` | Valores disponibles de carrera y departamento, para los botones de filtro. |
+| GET | `/api/docentes/buscar/:termino` | Busca por nombre; el término va en el **path**. |
+| GET | `/api/docentes/:id` | Ficha de un docente; el id va en el **path**. |
 
 ## Documentación Swagger (requisito)
 
 - pokemon-service: `/docs`, `/redoc`, `/openapi.json` (puerto 4001).
 - onepiece-service: `/docs`, `/redoc`, `/openapi.json` (puerto 4002).
+- docentes-service: `/docs` y `/openapi.json` (puerto 4003). Swagger UI se carga
+  desde un CDN, así que **esa página necesita internet**; el contrato en
+  `/openapi.json` se sirve siempre.
 - Públicos: `https://pokemon-service-rtjy.onrender.com/docs` y
   `https://onepiece-service.onrender.com/docs`.
 
@@ -176,7 +229,7 @@ documentos en MongoDB Atlas, mientras que Pokémon sigue en PostgreSQL.
 ```bash
 npm install                 # dependencias del frontend
 npm run backend:setup       # deps del backend + venv Python + seed (necesita internet)
-npm run backend             # gateway + pokemon-service + onepiece-service
+npm run backend             # gateway + pokemon + onepiece + docentes
 npm run web                 # la app en el navegador
 npm run backend:verify      # comprobar BD, búsqueda y límite de 20
 ```
@@ -189,8 +242,13 @@ npm run backend:verify      # comprobar BD, búsqueda y límite de 20
   el enunciado.
 - Microservicio en Node.js -> `backend/services/pokemon-service`.
 - Microservicio en Python -> `backend/services/onepiece-service` (FastAPI).
-- Documentado con Swagger -> `/docs` en ambos microservicios.
-- Público -> 3 servicios en Render + frontend en Vercel.
+- Microservicio **agnóstico** (sin framework de HTTP) ->
+  `backend/services/docentes-service`: `node:http`, enrutado a mano y una sola
+  dependencia (`pg`).
+- **Path params y query params, nunca body params** ->
+  `docentes-service`: solo expone `GET` y no lee el cuerpo de las peticiones.
+- Documentado con Swagger -> `/docs` en los tres microservicios.
+- Público -> 4 servicios en Render + frontend en Vercel.
 - El frontend no toca APIs externas -> los contextos solo llaman al gateway; las
   APIs externas viven en `external/` y solo las usa el seed.
 

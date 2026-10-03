@@ -75,7 +75,7 @@ services:
       # PORT lo detecta Render. Ver la nota en pokemon-service.
 
   # ---------------------------------------------------------------
-  # Microservicio 3: Docentes (Postgres propia, 20 docentes)
+  # Microservicio 3: Docentes (Postgres propia)
   #
   # Este es el servicio AGNOSTICO: no usa Express ni ningun framework de
   # HTTP. Solo `node:http`, el modulo que ya trae Node. Su unica dependencia

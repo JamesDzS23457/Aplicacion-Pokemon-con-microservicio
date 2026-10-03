@@ -20,14 +20,15 @@
 // ---------------------------------------------------------------------------
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   EmptyState,
   LoadingCard,
   Notice,
+  RefreshButton,
   ScreenHeader,
   SearchBar,
   SectionTitle,
@@ -39,8 +40,19 @@ import { colors, radius, shadows, spacing } from '../../lib/theme';
 
 export default function DocentesScreen() {
   const router = useRouter();
-  const { docentes, total, filtros, facetas, cargando, mensaje, tono, vacio, filtrar, refrescar } =
-    useDocentes();
+  const {
+    docentes,
+    total,
+    filtros,
+    facetas,
+    cargando,
+    mensaje,
+    tono,
+    vacio,
+    filtrar,
+    refrescar,
+    cargarFacetas,
+  } = useDocentes();
 
   // El texto que se esta escribiendo se guarda aparte del filtro aplicado. Si se
   // escribiera directamente en el contexto, cada tecla dispararia una peticion
@@ -59,6 +71,44 @@ export default function DocentesScreen() {
    * requisito del enunciado, que es que el dato entre por un PATH PARAM.
    */
   const abrirFicha = (docente: Docente) => router.push(`/docente/${docente.id}`);
+
+  // Al volver a esta pestaña se vuelve a pedir el listado. Motivo: si alguien
+  // agrega o borra un docente directamente en Supabase mientras el usuario esta
+  // en otra pantalla, al regresar aqui debe verse el cambio y no la lista que se
+  // quedo congelada en memoria.
+  //
+  // Se recargan tambien las facetas porque los botones de filtro de carrera y
+  // departamento salen de ellas: un docente nuevo con una carrera nueva tiene
+  // que poder filtrarse, y sin recargarlas ese boton no existiria.
+  //
+  // POR QUE LAS FUNCIONES VAN EN UN REF Y NO EN LAS DEPENDENCIAS:
+  // `refrescar` se recrea cada vez que cambian los filtros (los lleva en el
+  // cierre). Si fuera una dependencia, cambiar un filtro reejecutaria este efecto
+  // y haria una peticion de mas ademas de la que ya lanza el contexto. Y si se
+  // dejara fuera con `[]`, el cierre quedaria apuntando al PRIMER `refrescar`,
+  // con los filtros vacios: al refrescar se perderian los filtros aplicados. Con
+  // un ref se usan siempre las funciones mas recientes y el efecto se ejecuta
+  // solo al ganar el foco.
+  const refrescarRef = useRef(refrescar);
+  refrescarRef.current = refrescar;
+  const facetasRef = useRef(cargarFacetas);
+  facetasRef.current = cargarFacetas;
+
+  // El provider ya pide el listado al montar (esta por encima de las pestanas),
+  // asi que el primer foco no tiene que volver a pedirlo o la app arrancaria con
+  // dos peticiones identicas.
+  const primerFoco = useRef(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (primerFoco.current) {
+        primerFoco.current = false;
+        return;
+      }
+      void refrescarRef.current();
+      void facetasRef.current();
+    }, []),
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -92,6 +142,21 @@ export default function DocentesScreen() {
           accent={colors.docentes}
           loading={cargando}
         />
+
+        {/* Boton de refresco explicito. El pull-to-refresh de arriba tambien
+            sirve, pero aqui se ve que la lista se puede volver a pedir, y no
+            depende de que el usuario descubra el gesto de deslizar. */}
+        <View style={styles.refreshRow}>
+          <RefreshButton
+            onPress={() => {
+              void refrescar();
+              void cargarFacetas();
+            }}
+            accent={colors.docentes}
+            loading={cargando}
+            label="Actualizar"
+          />
+        </View>
 
         {/* Fila de filtros por carrera. Solo aparece si el servicio devolvio
             carreras: mostrar un desplegable vacio es peor que no mostrarlo. */}
@@ -158,23 +223,24 @@ export default function DocentesScreen() {
             <EmptyState
               icon={<MaterialCommunityIcons name="account-school" size={34} color={colors.docentes} />}
               title="Aun no hay docentes"
-              message="La base de datos esta vacia. Corre el seed para cargar los 20 registros de ejemplo."
+              message="La base de datos esta vacia. Los docentes se agregan desde el Table Editor de Supabase,"
               accent={colors.docentes}
               soft={colors.docentesSoft}
             />
           )
         ) : null}
 
-        {/* Aviso permanente al pie: los datos que se muestran son de ejemplo.
-            Se deja visible, no escondido en una pantalla de "acerca de",
-            porque es la unica forma de que quien mira la app sepa que no son
-            las fichas reales de la universidad. */}
+        {/* Nota al pie. Antes decia que los datos eran de ejemplo: ya no es asi,
+            la tabla contiene a la persona real de la que se dio autorizacion. Lo
+            que se conserva es el aviso de que la foto puede faltar, porque
+            `foto_url` es opcional y la app dibuja iniciales cuando no hay
+            imagen o la URL falla (algunos CDN de fotos de perfil responden 403). */}
         {docentes.length > 0 ? (
           <View style={styles.notaPie}>
             <MaterialCommunityIcons name="information-outline" size={16} color={colors.textFaint} />
             <Text style={styles.notaPieTexto}>
-              Los datos son de ejemplo y estan guardados en el microservicio de docentes. Las
-              fotos se reemplazan por iniciales cuando un docente no tiene imagen.
+              Los datos vienen del microservicio de docentes. Si un docente no tiene
+              foto, la tarjeta muestra sus iniciales.
             </Text>
           </View>
         ) : null}
@@ -193,6 +259,8 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
     paddingBottom: spacing.xxl,
   },
+  // Margen bajo el campo de busqueda para el boton de refresco.
+  refreshRow: { marginTop: spacing.md, marginBottom: spacing.lg },
   chips: { gap: spacing.sm, paddingRight: spacing.lg },
   notaPie: {
     flexDirection: 'row',

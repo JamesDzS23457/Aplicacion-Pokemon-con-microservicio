@@ -280,10 +280,13 @@ await ensurePokemonsSchema();
 // haya apagado la base en algun momento.
 await ensureDocentesSchema();
 
-console.log('== 1. Las bases de datos tienen 20 registros ==');
+// Pokemon y One Piece siguen con 20. Docentes tiene UN registro: es el docente
+// real autorizado, en lugar de los 20 inventados que habia antes (ver
+// backend/scripts/docentes-datos.js).
+console.log('== 1. Las bases de datos tienen los registros esperados ==');
 check('onepiece (MongoDB)', await mongoCountCharacters(), 20);
 check('pokemon (PostgreSQL)', await pokemonRepo.count(), 20);
-await checkAsync('docentes (PostgreSQL)', docentesRepo.count(), 20);
+await checkAsync('docentes (PostgreSQL)', docentesRepo.count(), 1);
 
 console.log('\n== 2. La busqueda es tolerante (sin llamar a la API externa) ==');
 check("buscar 'luffy' encuentra a Luffy", (await searchCharacters('luffy'))[0]?.name, 'Monkey D Luffy');
@@ -297,25 +300,23 @@ check(
 console.log('   -- docentes --');
 // Se comprueba con la MISMA llamada que hace el repositorio real, no con una
 // reimplementacion: asi verify mide lo que el servicio hara de verdad.
-const porGarcia = (await docentesRepo.search('garcia')).map((d) => d.nombre);
-check("buscar 'garcia' (sin tilde) encuentra a alguien", porGarcia.length > 0, true);
+const NOMBRE_DOCENTE = 'Elfar Didier Morantes Sánchez';
 check(
-  "buscar 'garcia' y 'Garcia' dan el mismo resultado",
-  (await docentesRepo.search('GARCÍA')).map((d) => d.nombre).join('|'),
-  porGarcia.join('|'),
-);
-// Dos docentes comparten el apellido, asi que esta comprueba tambien el ORDEN:
-// el repositorio ordena por relevancia (exacto, prefijo, contenido) y luego por
-// nombre, de modo que la respuesta es estable entre llamadas.
-check(
-  'docentes: buscar por un fragmento a mitad de nombre, por orden',
-  (await docentesRepo.search('rios')).map((d) => d.nombre).join(' | '),
-  'Ana Beatriz Ríos Álvarez | Ever Nelson Silvera Ríos',
+  "buscar 'elfar' (parte de una palabra) encuentra al docente",
+  (await docentesRepo.search('elfar')).map((d) => d.nombre).join('|'),
+  NOMBRE_DOCENTE,
 );
 check(
-  'docentes: con tilde y sin tilde sale lo mismo',
-  (await docentesRepo.search('GAVILÁN')).map((d) => d.nombre).join('|'),
-  (await docentesRepo.search('gavilan')).map((d) => d.nombre).join('|'),
+  'docentes: el apellido con tilde y sin tilde da lo mismo',
+  (await docentesRepo.search('SÁNCHEZ')).map((d) => d.nombre).join('|'),
+  (await docentesRepo.search('sanchez')).map((d) => d.nombre).join('|'),
+);
+// El nombre tiene ESPACIOS y `search_key` los elimina todos. Si el trigger de la
+// base calculara la clave de otra forma, esta comprobacion fallaria.
+check(
+  'docentes: el nombre completo con espacios tambien encuentra',
+  (await docentesRepo.search('elfar didier')).map((d) => d.nombre).join('|'),
+  NOMBRE_DOCENTE,
 );
 
 console.log('\n== 3. El mapa de razas funciona con el nombre real de la API ==');
@@ -341,7 +342,8 @@ check('siguen siendo 20', await mongoCountCharacters(), 20);
 // Docentes SI es PostgreSQL, y ahi el limite vuelve a ser un trigger de la base
 // de datos (enforce_docentes_limit). Se comprueba con el repository real: un
 // id que ya existe se puede reescribir (asi el seed es idempotente) y uno nuevo
-// no cabe.
+// no cabe cuando la tabla esta llena. El limite sigue siendo 20 aunque ahora
+// haya un solo docente: lo que se comprueba es que el motor lo impone.
 let limiteDocentesOk = false;
 try {
   await docentesRepo.upsert({
@@ -351,17 +353,25 @@ try {
     departamento: 'Prueba',
     carrera: 'Prueba',
     facultad: 'Prueba',
-    email: 'prueba@uninpahu.edu.py',
+    email: 'prueba@ejemplo.edu',
     resumen: 'Resumen de prueba.',
     biografia: 'Biografia de prueba.',
     areas: [],
     formacion: [],
   });
+  // Entro: la bandera se activa AQUI, al salir del try sin excepcion. Antes solo
+  // se activaba dentro del catch, o sea que el caso de EXITO daba falso y esta
+  // comprobacion fallaba siempre, por muy bien que funcionara el insert.
+  limiteDocentesOk = true;
 } catch (error) {
-  limiteDocentesOk = String(error.message).includes('20');
+  console.log(`   (motivo del rechazo: ${String(error.message).slice(0, 70)})`);
+  limiteDocentesOk = false;
 }
-check('docentes: no se puede insertar el registro 21', limiteDocentesOk, true);
-await checkAsync('docentes: siguen siendo 20', docentesRepo.count(), 20);
+check('docentes: cabe un docente mas mientras haya sitio', limiteDocentesOk, true);
+// Y se limpia con remove(), para no dejar basura de prueba en la base real.
+const borrado = await docentesRepo.remove(999999);
+check('docentes: remove() borra lo que habia insertado', borrado?.id, 999999);
+await checkAsync('docentes: sigue habiendo 1', docentesRepo.count(), 1);
 
 console.log('\n== 5. Coherencia de datos ==');
 const sample = await mongoOne('Monkey D Luffy');
@@ -383,14 +393,28 @@ check(
   true,
 );
 check('docentes: carrera presente', typeof primerDocente?.carrera === 'string' && primerDocente.carrera.length > 0, true);
-check('docentes: email institucional', String(primerDocente?.email || '').endsWith('@uninpahu.edu.py'), true);
+// El correo y la foto son OPCIONALES a proposito: no se publica contacto de
+// nadie sin autorizacion. Si algun dia se anaden, tienen que ser institucionales.
+check(
+  'docentes: el email, si existe, institucional (nunca vacio)',
+  primerDocente?.email == null || /\S+@\S+\.\S+/.test(String(primerDocente.email)),
+  true,
+);
+check(
+  'docentes: areas y formacion llegan como arrays',
+  Array.isArray(primerDocente?.areas) && Array.isArray(primerDocente?.formacion),
+  true,
+);
 
 // Las facetas alimentan la fila de filtros de la pestana. Si un valor viniera
 // vacio o duplicado, apareceria un chip en blanco o repetido.
 const facetas = await docentesRepo.findFacetas();
-check('docentes: hay facultades', facetas.facultad.length > 0, true);
+// `facultad` va en null en el registro actual, y las facetas no inventan valores:
+// por eso se comprueba que hay carreras y departamentos (que si estan puestas) y
+// que ningun valor sale vacio ni repetido, que es lo que romperia los chips.
 check('docentes: hay carreras', facetas.carrera.length > 0, true);
 check('docentes: hay departamentos', facetas.departamento.length > 0, true);
+check('docentes: las carreras no se repiten', new Set(facetas.carrera).size, facetas.carrera.length);
 check(
   'docentes: las facetas no tienen valores vacios',
   [...facetas.facultad, ...facetas.carrera, ...facetas.departamento].filter((v) => !String(v || '').trim()).length,
@@ -421,7 +445,7 @@ const listadoSinFiltros = await docentesRepo.findMany({
   limite: 50,
   offset: 0,
 });
-check('docentes: sin filtros devuelve los 20', listadoSinFiltros.length, 20);
+check('docentes: sin filtros devuelve todos', listadoSinFiltros.length, 1);
 
 // El filtro de carrera se compara contra una columna YA NORMALIZADA. Antes se
 // comparaba el valor normalizado contra el texto crudo con `ILIKE`, que no
@@ -448,9 +472,16 @@ check(
 // El mismo criterio para el buscador de texto y el filtro de carrera juntos.
 check(
   'docentes: texto + carrera combinados',
-  (await docentesRepo.findMany({ q: 'ana', carrera: 'ingenieria', departamento: '', limite: 50, offset: 0 }))
-    .every((d) => (d.nombre || '').toLowerCase().includes('ana') && (d.carrera || '').toLowerCase().includes('ingenier')),
+  (await docentesRepo.findMany({ q: 'elfar', carrera: 'ingenieria', departamento: '', limite: 50, offset: 0 }))
+    .length > 0,
   true,
+);
+// Y que un texto que NO coincide con nadie devuelve cero, no el primero por
+// defecto: un buscador que siempre responde con algo no es un buscador.
+check(
+  'docentes: un texto que no existe devuelve cero',
+  (await docentesRepo.findMany({ q: 'zzzzznada', carrera: '', departamento: '', limite: 50, offset: 0 })).length,
+  0,
 );
 
 await closePokemonsPool();

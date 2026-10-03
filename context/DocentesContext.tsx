@@ -294,16 +294,31 @@ export function DocentesProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
-  // Carga inicial: el listado completo y las facetas, en paralelo. Se lanza una
-  // sola vez al montar el provider (que vive por encima de las pestanas) y no en
-  // cada visita a la quinta pestana: volver a entrar no debe repreguntar.
+  // Cada vez que cambian los filtros se vuelve a pedir el listado, con los
+  // filtros YA applied. Este efecto es el UNICO sitio que dispara una consulta
+  // por cambio de filtro.
+  //
+  // Antes no habia nada aqui: `filtrar` solo llamaba a `setFiltros`, y como
+  // `refrescar` es un `useCallback` que depende de `filtros` pero nadie lo
+  // llamaba, escribir en el buscador o pulsar un filtro de carrera no pedia
+  // NADA. La lista se quedaba siempre con la primera consulta. El `[]` que hay
+  // en las dependencias de la pantalla no lo arregla: se dispara al montar, no
+  // al cambiar el filtro.
+  //
+  // Al montar tambien se ejecuta (las dependencias iniciales son las de
+  // siempre), asi que la primera carga sigue siendo una sola peticion.
   useEffect(() => {
     void refrescar();
+  }, [filtros, refrescar]);
+
+  // Las facetas son las que generan los botones de filtro. Se piden una sola vez,
+  // al montar: son tres listas cortas que no cambian durante la sesion. Si el
+  // usuario agrega un docente con una carrera nueva desde Supabase, el boton de
+  // esa carrera no aparecera hasta reiniciar la app; por eso la pantalla llama
+  // tambien a `cargarFacetas` al volver a la pestana.
+  useEffect(() => {
     void cargarFacetas();
-    // Solo al montar. `refrescar` cambia cuando cambian los filtros, y no
-    // interesa: el cambio de filtros se dispara desde `filtrar`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cargarFacetas]);
 
   return (
     <DocentesContext.Provider

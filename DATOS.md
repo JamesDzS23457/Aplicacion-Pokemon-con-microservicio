@@ -1,12 +1,23 @@
 # Datos de las bases de datos
 
-Documento generado automáticamente desde las bases **desplegadas**
-(consultadas a través del gateway `https://gateway-wm3a.onrender.com`) el **2026-10-03**.
+Documento generado automáticamente desde las bases **locales**
+(consultadas a través del gateway `http://localhost:3000`) el **2026-10-03**.
 
-Cada base guarda como máximo **20 registros**; el límite lo impone un
-*trigger* de PostgreSQL, no el código de la aplicación.
+Pokémon y docentes guardan como máximo **20 registros** cada una, y el
+límite lo impone un *trigger* de PostgreSQL, no el código. One Piece también
+tiene 20, pero **su límite no es un trigger**: MongoDB no tiene triggers, así
+que se comprueba en el repositorio antes de insertar un documento nuevo (un
+id que ya existe sí se puede reescribir, para que el seed sea idempotente).
 
-En la columna **Nombre**, si hay retrato, el nombre enlaza a la imagen.
+Las tres bases son de motor distinto: Pokémon y docentes en **PostgreSQL**
+(Supabase) y One Piece en **MongoDB** (Atlas).
+
+La tabla de docentes no está llena: contiene las personas autorizadas, que
+pueden ser menos de 20, y cambia cuando alguien la edita a mano.
+
+En las dos primeras tablas, si hay retrato, el nombre enlaza a la imagen. En
+la de docentes **no**: `foto_url` es opcional y el enlace se rompería en
+cuanto ese CDN dejara de servirla.
 
 ---
 
@@ -63,7 +74,29 @@ Retratos: `cdn.myanimelist.net` (Jikan / MyAnimeList), guardados en
 | 17 | 37 | [vulpix](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/37.png) | fire | Macho o hembra | Pokémon Zorro |
 | 18 | 39 | [jigglypuff](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/39.png) | normal, fairy | Macho o hembra | Pokémon Globo |
 | 19 | 94 | [gengar](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/94.png) | ghost, poison | Macho o hembra | Pokémon Sombra |
-| 20 | 131 | [lapras](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/131.png) | water, ice | Macho o hembra | Pokémon Transporte |
+| 20 | 132 | [ditto](https://github.com/PokeAPI/sprites/blob/master/sprites/pokemon/132.png) | - | jhe | jidkw |
 
 Retratos: `raw.githubusercontent.com` (PokeAPI sprites), guardados en
 `sprites.front_default` durante el seed.
+
+---
+
+## Docentes (1)
+
+| # | id | Nombre | Cargo | Carrera | Departamento | Foto |
+|---:|---:|---|---|---|---|---|
+| 01 | 1 | Elfar Didier Morantes Sánchez | Profesional Universitario e Ingeniero de Software | Ingeniería Electrónica | Dirección de Medios y Nuevas Tecnologías | si |
+
+Cada docente tiene **dos textos distintos**, que es lo que exige la quinta
+pestaña: `resumen` (el breve, que va en la tarjeta, recortado a tres líneas)
+y `biografia` (el completo, que va en la ficha al pulsar «Leer más»).
+
+Esta tabla **no tiene API externa de origen**: se edita a mano en el Table
+Editor de Supabase (o con `npm run backend:seed:docentes`, que la reinicia a
+partir de `backend/scripts/docentes-datos.js`). Por eso el servicio tiene un
+*trigger* que recalcula `search_key`, `carrera_key` y `departamento_key` en cada
+inserción: si no, un docente escrito a mano sin esas columnas aparecería en el
+listado pero no se encontraría al buscarlo ni se podría filtrar.
+
+`foto_url` es **opcional**. Cuando falta, la app dibuja un avatar con las
+iniciales sobre el color de la facultad, así que la pantalla nunca se ve rota.

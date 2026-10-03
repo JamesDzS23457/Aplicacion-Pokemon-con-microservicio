@@ -18,7 +18,7 @@ import type { Docente } from '../context/DocentesContext';
 // ---------------------------------------------------------------------------
 // Foto del docente, CON RESPALDO de iniciales.
 //
-// Que `foto_url` sea opcional no es un detalle: los datos de ejemplo no traen
+// Que `foto_url` sea opcional no es un detalle: hay docentes sin imagen
 // fotos y, mas aun asi, una tarjeta sin imagen se veria rota o, peor, con un
 // hueco gris. Asi que cuando no hay foto (o cuando la URL esta rota) se dibuja
 // un circulo con las iniciales sobre el color de la facultad.

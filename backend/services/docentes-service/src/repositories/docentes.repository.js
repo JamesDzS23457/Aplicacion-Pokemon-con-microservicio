@@ -277,3 +277,25 @@ export async function upsert(docente) {
 export async function clear() {
   await query('TRUNCATE TABLE docentes');
 }
+
+/**
+ * Borra UN docente por id y devuelve el registro eliminado, o `null` si no habia
+ * ninguno con ese id.
+ *
+ * NO es una ruta HTTP: el servicio de docentes es de solo lectura y no expone
+ * ningun verbo distinto de GET. Esto es una funcion de MANTENIMIENTO, para
+ * corregir la tabla a mano desde el Table Editor de Supabase sin abrir el panel.
+ * Borrar desde el panel es igual de valido: el frontend se entera igual, porque
+ * al volver a la pestana vuelve a pedir el listado (ver el useFocusEffect de
+ * app/(tabs)/docentes.tsx).
+ *
+ * El trigger del limite de 20 va en BEFORE INSERT, asi que un DELETE lo esquiva
+ * sin problema.
+ *
+ * Se usa `RETURNING` y no el `rowCount` de pg porque `query()` de db/connection
+ * devuelve unicamente `result.rows`. Pedir la fila borrada mantiene esto en un
+ * solo viaje y le dice a quien llama que se elimino de verdad.
+ */
+export async function remove(id) {
+  return queryOne('DELETE FROM docentes WHERE id = $1 RETURNING id', [id]);
+}

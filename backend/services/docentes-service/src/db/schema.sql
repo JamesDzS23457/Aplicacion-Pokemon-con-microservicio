@@ -121,3 +121,67 @@ CREATE TRIGGER docentes_max_20
   BEFORE INSERT ON docentes
   FOR EACH ROW
   EXECUTE FUNCTION enforce_docentes_limit();
+
+-- ---------------------------------------------------------------------------
+-- CLAVES DE BUSQUEDA AL INSERTAR O RENOMBRAR A MANO
+--
+-- `search_key`, `carrera_key` y `departamento_key` son columnas CALCULADAS: las
+-- genera el codigo (src/lib/normalize.js) y las comparan todas las busquedas y
+-- todos los filtros. El problema: si alguien inserta un docente directamente
+-- desde el Table Editor de Supabase y deja esas columnas vacias, el docente
+-- aparece en el listado (que sin `q` no las mira) pero NO se encuentra al
+-- buscarlo por nombre, y sus filtros de carrera y departamento no funcionan.
+--
+-- Este trigger las recalcula siempre, en cada INSERT y en cada UPDATE de los
+-- campos de los que dependen, para que la base quede coherente sin depender de
+-- que quien edita se acuerde de esos tres campos auxiliares.
+--
+-- Replica EXACTAMENTE las dos funciones de src/lib/normalize.js:
+--   - normalizeSearchKey (para search_key): minusculas, sin acentos, sin
+--     puntuacion y SIN ESPACIOS. "Elfar Didier" -> "elfardidier".
+--   - normalizeFilter (para carrera_key y departamento_key): lo mismo pero
+--     conservando un espacio simple entre palabras. "Ingenieria en Sistemas" ->
+--     "ingenieria en sistemas", que es justo como llega el filtro desde la app.
+--
+-- Se usa translate() y no unaccent() porque unaccent() es una EXTENSION que hay
+-- que instalar, y eso ataria el despliegue a una configuracion concreta de la
+-- base. Las tres claves deben acabar con el mismo formato que produce el codigo:
+-- si divergen, el filtro "sin tilde" deja de encontrar.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION refresh_docentes_keys() RETURNS TRIGGER AS $$
+BEGIN
+  -- search_key: se retira TODO lo que no sea letra o digito, incluidos los
+  -- espacios. OJO: aqui NO se corta por "/". El normalize.js de este servicio
+  -- (lib/normalize.js) no descarta el alias, al contrario que el de Pokemon, asi
+  -- que esta consulta replica solo sus dos reglas: minusculas y quitar lo que
+  -- no sea letra o digito. Nada mas.
+  NEW.search_key := regexp_replace(
+    translate(
+      lower(NEW.nombre),
+      'áàäâãåéèëêíìïîóòöôõúùüûñç', 'aaaaaaeeeeiiiiooooouuuunc'),
+    '[^a-z0-9]', '', 'g');
+
+  -- carrera_key / departamento_key: los mismos caracteres, pero un espacio
+  -- simple entre palabras en lugar de nada. El `btrim` quita el espacio sobrante
+  -- del principio y del final, igual que el `.trim()` de normalizeText, y el
+  -- NULLIF evita guardar cadenas vacias (el codigo usa `|| null`).
+  NEW.carrera_key := NULLIF(btrim(regexp_replace(
+    translate(lower(coalesce(NEW.carrera, '')),
+      'áàäâãåéèëêíìïîóòöôõúùüûñç', 'aaaaaaeeeeiiiiooooouuuunc'),
+    '[^a-z0-9]+', ' ', 'g')), '');
+
+  NEW.departamento_key := NULLIF(btrim(regexp_replace(
+    translate(lower(coalesce(NEW.departamento, '')),
+      'áàäâãåéèëêíìïîóòöôõúùüûñç', 'aaaaaaeeeeiiiiooooouuuunc'),
+    '[^a-z0-9]+', ' ', 'g')), '');
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS docentes_search_keys ON docentes;
+
+CREATE TRIGGER docentes_search_keys
+  BEFORE INSERT OR UPDATE OF nombre, carrera, departamento ON docentes
+  FOR EACH ROW
+  EXECUTE FUNCTION refresh_docentes_keys();

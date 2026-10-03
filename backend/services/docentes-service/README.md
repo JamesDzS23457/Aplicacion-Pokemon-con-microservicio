@@ -132,7 +132,7 @@ datos.** No hay SQL fuera de `repositories/`.
 # La primera vez, desde la raiz del proyecto
 npm install --prefix backend/services/docentes-service
 
-# Cargar los 20 docentes (idempotente, no necesita internet)
+# Cargar los docentes desde backend/scripts/docentes-datos.js (idempotente, sin internet)
 npm run backend:seed:docentes
 
 # Arrancar solo este servicio
