@@ -44,9 +44,9 @@ async def lifespan(_app):
     #    Pero si falta la URI de Mongo NO se aborta el arranque. Antes este await
     #    propagaba el RuntimeError de connection.py, el proceso moria sin
     #    escuchar y Render no daba ninguna URL: el despliegue fallaba en bucle
-    #    sin forma de consultarlo. Ahora el el servicio levanta en modo degradado,
-    #    `/health` devuelve 503 con el motivo exacto y las rutas de datos
-    #    devuelven ese mismo motivo, que se puede leer con un curl.
+    #    sin forma de consultarlo. Ahora el servicio levanta en modo degradado,
+    #    `/health` devuelve 200 con `status: error` y el motivo exacto, y las
+    #    rutas de datos devuelven ese mismo motivo. Todo eso se lee con un curl.
     #
     #    `ensure_indexes` tambien puede fallar por la RED (Atlas dormido, IP
     #    bloqueada en la Network Access List). Es el mismo caso: es preferible
@@ -61,6 +61,12 @@ async def lifespan(_app):
             # lee cuando algo va mal, y un TopologyDescription de 900
             # caracteres esconde el motivo real.
             log(f"AVISO: la base no responde todavia: {connection.diagnosticar_error(exc)}")
+    # El shard se resuelve al LEVANTAR y no solo cuando se usa la base: lo
+    # necesita el sondeo TCP de `/health` para separar "Atlas me cierra la puerta"
+    # de "no llego al puerto 27017". Resolver un SRV es una consulta DNS, no una
+    # conexion, asi que no puede fallar por lo que este fallando.
+    log(f"SHARD: {connection.resolver_shard()}")
+
     puerto = os.environ.get("PORT", "4002")
     # Se imprime el entorno y CONTRA QUE BASE se habla (el host, nunca las
     # credenciales). Es lo primero que se mira si una busqueda "no encuentra
@@ -121,9 +127,13 @@ async def generic_error_handler(_request: Request, exc: Exception):
     EXCEPCION: si lo que falla es la CONFIGURACION (falta
     `ONEPIECE_MONGODB_URI`), si se devuelve el motivo. Ese error no contiene
     informacion interna: es un texto que el propio servicio escribio sobre sus
-    propias variables de entorno, ycallarlo "error interno" solo obliga a ir a
+    propias variables de entorno, y llamarlo "error interno" solo obliga a ir a
     mirar el log de Render. Un despliegue mal configurado tiene que poder
     diagnosticarse desde fuera.
+
+    Aqui el 503 SI es correcto, a diferencia del de `/health`: esto no lo consulta
+    `healthCheckPath`, y un 503 en una ruta de datos es exactamente lo que la app
+    necesita ver para pintar su aviso de error.
     """
     log(f"500: {exc}")
     if connection.ERROR_CONFIGURACION:
@@ -145,9 +155,11 @@ async def generic_error_handler(_request: Request, exc: Exception):
     summary="Estado del servicio",
     description=(
         "Comprueba que el servicio responde y cuantos personajes hay en la base. "
-        "Devuelve **503** con el motivo exacto cuando la configuracion esta mal "
-        "o la base de datos no responde: este es el endpoint de diagnostico en "
-        "produccion, porque el servicio sigue vivo aunque la base no lo este."
+        "Cuando la configuracion esta mal o la base no responde, responde **200** "
+        "con `status: error` y el motivo exacto dentro. Sigue siendo 200 a "
+        "proposito: `healthCheckPath` de Render reinicia la instancia ante un 503, "
+        "y con 503 el servicio se reiniciaba en bucle y quedaba inalcanzable, sin "
+        "poder consultarse ni desde la app ni con un curl."
     ),
 )
 async def health():
@@ -159,41 +171,62 @@ async def health():
     # ESTE ES EL ENDPOINT DE DIAGNOSTICO EN PRODUCCION. Si el despliegue esta mal
     # configurado (falta ONEPIECE_MONGODB_URI) o Atlas no deja entrar, este es el
     # unico sitio donde se puede leer el motivo desde fuera: el servicio esta
-    # vivo y `/health` responde 503 con la causa exacta. Antes, en ese mismo
-    # caso, el proceso moria al importar y no habia ninguna URL que consultar.
+    # vivo y `/health` responde con `status: error` y la causa exacta. Antes, en
+    # ese mismo caso, el proceso moria al importar y no habia ninguna URL que
+    # consultar; y con 503, Render reiniciaba la instancia en bucle y tampoco
+    # habia forma de leerlo desde fuera.
     if connection.ERROR_CONFIGURACION:
-        log(f"503: {connection.ERROR_CONFIGURACION}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "error",
-                "service": "onepiece-service",
-                "error": connection.ERROR_CONFIGURACION,
-            },
-        )
+        log(f"health: {connection.ERROR_CONFIGURACION}")
+        return {
+            "status": "error",
+            "service": "onepiece-service",
+            "error": connection.ERROR_CONFIGURACION,
+        }
 
     try:
         personajes = await repo.count()
     except Exception as exc:  # noqa: BLE001 - aqui el motivo SI es util
-        # A diferencia del resto de errores, aqui se devuelve el motivo. Y se
-        # devuelve YA TRADUCIDO: la excepcion de pymongo para un fallo de Atlas
-        # son ~900 caracteres de TopologyDescription con los tres shards, de los
-        # que hay que extraer mentalmente una sola conclusion. `diagnosticar_error`
-        # la deja en un texto corto que dice que hacer.
+        # POR QUE 200 Y NO 503 (y no es casualidad, es lo unico que funciona):
         #
-        # Sin este endpoint un despliegue roto no se puede diagnosticar: el
-        # servicio estaba vivo pero sin base, asi que no hay error de despliegue
-        # que se vea en el panel, solo un 503 en cada peticion de la app.
+        # `healthCheckPath: /health` de Render trata un 503 como "el servicio esta
+        # caido" y REINICIA la instancia. Con 503 aqui se entra en un bucle en el
+        # que Render reinicia el proceso cada pocos segundos, el origen deja de
+        # atender y el servicio queda INALCANZABLE: ni la app ni un curl Contestan.
+        # Eso se quedaba de verdad: con /health en 503, `curl` al servicio devolvia
+        # error de conexion en vez de su mensaje de diagnostico. Para enterarse
+        # habia que bajar a los logs de Render, que es justo lo que se queria
+        # evitar.
+        #
+        # Asi que el codigo HTTP responde "el proceso vive y sirve", que es lo
+        # que Render necesita saber, y el estado de la base va DENTRO, en
+        # `status: error`. Se lee igual de bien con un curl y el servicio no se
+        # reinicia. Cuando la base este bien, `status` pasa a `ok` sin tocar nada.
+        #
+        # El motivo va YA TRADUCIDO: la excepcion de pymongo para un fallo de
+        # Atlas son ~900 caracteres de TopologyDescription con los tres shards
+        # repetidos, de los que hay que extraer mentalmente una sola conclusion.
+        #
+        # Y se acompana de un SONDEO TCP al shard, que es lo que separa las dos
+        # causas que el alert de TLS deja indistinguibles.
         motivo = connection.diagnosticar_error(exc)
-        log(f"503: {motivo}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "error",
-                "service": "onepiece-service",
-                "error": motivo,
-            },
-        )
+        detalle = {}
+        if "tlsv1 alert" in str(exc) or "SSL handshake failed" in str(exc):
+            sondeo = await connection.sondear_alcance(
+                connection.SHARD_HOST, connection.SHARD_PORT
+            )
+            detalle = {
+                "tcp_al_shard": sondeo["tcp"],
+                "tcp_detalle": connection.formatear_sondeo(sondeo),
+            }
+            motivo = f"{motivo}\n{detalle['tcp_detalle']}"
+
+        log(f"health: {motivo}")
+        return {
+            "status": "error",
+            "service": "onepiece-service",
+            "error": motivo,
+            **detalle,
+        }
 
     return {"status": "ok", "service": "onepiece-service", "characters": personajes}
 

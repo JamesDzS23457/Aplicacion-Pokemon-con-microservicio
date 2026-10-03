@@ -69,11 +69,30 @@ class SearchRequest(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Respuesta del healthcheck, con el conteo para detectar una BD vacia."""
+    """Respuesta del healthcheck, con el conteo para detectar una BD vacia.
+
+    `characters` y `error` son mutuamente excluyentes, pero NO hace falta
+    declararlos asi: el modelo es la DOCUMENTACION de lo que se devuelve, y
+    `/health` tiene tres formas legitimas de responder.
+
+    Que los campos fueran todos obligatorios era un fallo silencioso en si mismo:
+    con `characters: int` requerido, devolver `{"status": "error", "error": ...}`
+    hace que FastAPI lance `ResponseValidationError` DESPUES de que la ruta
+    terminara, y esa excepcion la recoge `generic_error_handler`, que devuelve
+    un 500 "Error interno del servidor". O sea: el endpoint de diagnostico
+    contestaba justo lo contrario de lo que queria decir cuando algo fallaba.
+    Todos los campos opcionales, y `characters` vale null cuando no se pudo
+    contar nada.
+    """
 
     status: str
     service: str
-    characters: int
+    characters: int | None = None
+    error: str | None = None
+    # Solo aparecen cuando el fallo es un alert de TLS de Atlas: el sondeo TCP
+    # al shard es lo que separa "Atlas no me deja entrar" de "no llego al puerto".
+    tcp_al_shard: bool | None = None
+    tcp_detalle: str | None = None
 
 
 class ErrorResponse(BaseModel):

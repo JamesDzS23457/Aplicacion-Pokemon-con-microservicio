@@ -25,12 +25,19 @@
 # desactivar la verificacion del certificado de Supabase).
 # ---------------------------------------------------------------------------
 
+import asyncio
+import contextlib
 import os
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from pymongo import AsyncMongoClient
+
+# Se importa desde `lib.log` y no se vuelve a deducir aqui: `ENTORNO` es la
+# unica fuente de verdad sobre si esto corre en Render o en local, y duplicar
+# esa comprobacion es como se acaba uno contradiciendo al otro.
+from ..lib.log import ENTORNO
 
 # ---------------------------------------------------------------------------
 # CARGA DEL .ENV LOCAL
@@ -127,6 +134,108 @@ PISTAS_ATLAS_TLS = (
     "'bad auth' si la contrasena falla de verdad; si solo dice 'tlsv1 alert', "
     "es la lista de IPs."
 )
+
+
+# Host y puerto de UN shard concreto, para el sondeo TCP. Se resuelve por SRV
+# porque el nombre del clustro (`cluster0.xxx.mongodb.net`) NO tiene registro A:
+# sin resolver el SRV no hay ningun host al que abrirle un socket.
+SHARD_HOST = "?"
+SHARD_PORT = 27017
+
+
+def resolver_shard():
+    """Llena SHARD_HOST con el primer shard que resuelva el SRV del clustro.
+
+    Devuelve un texto con lo que paso, para el log: si falla, el sondeo TCP no
+    tiene sentido y hay que decirlo, no devolver un `?` y que el sondeo falle por
+    una razon que no es la que se quiere diagnosticar.
+    """
+    global SHARD_HOST, SHARD_PORT
+    if not MONGODB_URI:
+        return "sin URI configurada"
+
+    # El prefijo `_mongodb._tcp` es el que convierte el nombre del clustro en el
+    # de los shards. `+short` hace que dnspython devuelva el nombre pelado, sin
+    # los dos puntos del puerto, que se leen aparte.
+    try:
+        import dns.resolver
+
+        partes = urlsplit(MONGODB_URI)
+        consulta = f"_mongodb._tcp.{partes.hostname}"
+        respuesta = dns.resolver.resolve(consulta, "SRV")
+        registro = sorted(respuesta, key=lambda r: (r.priority, r.weight))[0]
+        SHARD_HOST = str(registro.target).rstrip(".")
+        SHARD_PORT = int(registro.port)
+        return f"{consulta} -> {SHARD_HOST}:{SHARD_PORT}"
+    except Exception as exc:  # noqa: BLE001 - es informacion de diagnostico
+        return f"no se pudo resolver el SRV del clustro: {exc}"
+
+
+async def sondear_alcance(host: str, puerto: int = 27017, timeout: float = 8.0):
+    """Comprueba si se puede ABRIR un socket TCP contra el shard. Devuelve un dict.
+
+    Existe para responder a la unica pregunta que de verdad importa cuando Atlas
+    da un alert de TLS y no se sabe cual de las dos causas es: **se llega al
+    puerto o no**.
+
+    - Si el socket abre y luego el TLS falla, se LLEGA a Atlas y es Atlas el que
+      corta: la Network Access List.
+    - Si el socket ni siquiera abre, no hay ruta y el problema es de red o el
+      puerto esta bloqueado por el host.
+
+    `ssl=None` a proposito: este es un TCP puro, sin TLS. Si se pidiera TLS aqui
+    se repetiria justo el error que se quiere aislar.
+    """
+    import socket
+
+    resultado = {"host": host, "puerto": puerto, "tcp": None, "error": None}
+    if not host or host == "?":
+        resultado.update(
+            tcp=False, error="no se pudo resolver el nombre de ningun shard"
+        )
+        return resultado
+    try:
+        lector, escritor = await asyncio.wait_for(
+            asyncio.open_connection(host, puerto), timeout=timeout
+        )
+        resultado["tcp"] = True
+        escritor.close()
+        # `wait_closed()` puede lanzar si el peer ya cerro. Es un detalle que no
+        # cambia la conclusion (el socket SI se abrio) y no debe enmascararla.
+        with contextlib.suppress(Exception):
+            await lector.wait_closed()
+    except asyncio.TimeoutError:
+        resultado.update(tcp=False, error=f"timeout de {timeout:g}s al abrir el socket")
+    except OSError as exc:
+        resultado.update(tcp=False, error=f"{type(exc).__name__}: {exc}")
+    return resultado
+
+
+def formatear_sondeo(sondeo) -> str:
+    """Convierte el sondeo TCP en una frase para el log y para /health."""
+    if not sondeo["tcp"] and "no se pudo resolver" in (sondeo["error"] or ""):
+        return (
+            "No se pudo resolver por SRV ningun shard del clustro, asi que el "
+            "sondeo TCP no dice nada. Sin ese dato el diagnostico se queda en: "
+            "Atlas no acepta la conexion."
+        )
+    # Quien llega a Atlas hay que nombrarlo bien: en LOCAL el sondeo casi nunca
+    # falla, asi que un texto que hable de Render ahi seria falso.
+    quien = (
+        "Render" if ENTORNO == "DESPLEGADO" else "este proceso en local"
+    )
+    if sondeo["tcp"]:
+        return (
+            f"Se abre el socket TCP a {sondeo['host']}:{sondeo['puerto']}, o sea que "
+            f"{quien} SI llega a Atlas y lo que corta es Atlas: su Network Access "
+            f"List no incluye la IP de salida de {quien}. Anade 0.0.0.0/0 en "
+            "Atlas > Network Access List."
+        )
+    return (
+        f"No se puede abrir un socket TCP a {sondeo['host']}:{sondeo['puerto']} "
+        f"({sondeo['error']}). O sea que {quien} no llega al puerto 27017: no es "
+        "la lista de IPs de Atlas sino la ruta o el puerto."
+    )
 
 
 def diagnosticar_error(exc) -> str:
