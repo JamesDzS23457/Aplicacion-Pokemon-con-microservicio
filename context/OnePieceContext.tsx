@@ -1,4 +1,5 @@
 import { createContext, PropsWithChildren, useContext, useState } from 'react';
+import { API_URL, log } from '../lib/api';
 
 export type OnePieceCharacter = {
   id: number;
@@ -23,7 +24,6 @@ type OnePieceContextValue = {
 };
 
 const OnePieceContext = createContext<OnePieceContextValue | undefined>(undefined);
-const apiUrl = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
 
 export function OnePieceProvider({ children }: PropsWithChildren) {
   const [character, setCharacter] = useState<OnePieceCharacter | null>(null);
@@ -38,12 +38,20 @@ export function OnePieceProvider({ children }: PropsWithChildren) {
     }
     setCargando(true);
     setMensaje('');
+    // Mismo patron que PokemonContext: medir y registrar cada busqueda. El
+    // nombre se envia tal cual (sin lower) porque el microservicio es quien
+    // normaliza; aqui se registra para ver exactamente que viajo por la red.
+    const inicio = Date.now();
+    log(`POST /api/characters/search name="${nombre.trim()}" -> ${API_URL}`);
+    // 0 = ni siquiera hubo respuesta HTTP (fallo de red o servicio dormido).
+    let estado = 0;
     try {
-      const response = await fetch(`${apiUrl}/api/characters/search`, {
+      const response = await fetch(`${API_URL}/api/characters/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: nombre.trim() }),
       });
+      estado = response.status;
       if (!response.ok) {
         const detail = await response.json().catch(() => null);
         if (response.status === 400) throw new Error(detail?.error || 'Escribe el nombre de un personaje.');
@@ -51,10 +59,14 @@ export function OnePieceProvider({ children }: PropsWithChildren) {
         throw new Error(detail?.error || 'No se pudo consultar el servicio');
       }
       const payload = await response.json();
-      setCharacter(payload.data?.[0] ?? null);
+      const encontrado = payload.data?.[0] ?? null;
+      setCharacter(encontrado);
+      log(`  ${estado} en ${Date.now() - inicio}ms: ${encontrado ? `encontrado "${encontrado.name}"` : 'sin resultados'}`);
     } catch (error) {
+      const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar One Piece.';
+      log(`  ${estado || 'sin respuesta'} en ${Date.now() - inicio}ms: ${mensajeError}`);
       setCharacter(null);
-      setMensaje(error instanceof Error ? error.message : 'No se pudo consultar One Piece.');
+      setMensaje(mensajeError);
     } finally {
       setCargando(false);
     }

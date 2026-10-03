@@ -1,4 +1,5 @@
 import { createContext, PropsWithChildren, useContext, useState } from 'react';
+import { API_URL, log } from '../lib/api';
 
 export type Pokemon = {
   id: number;
@@ -20,7 +21,6 @@ type PokemonContextValue = {
 };
 
 const PokemonContext = createContext<PokemonContextValue | undefined>(undefined);
-const apiUrl = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
 
 export function PokemonProvider({ children }: PropsWithChildren) {
   const [pokemon, setPokemon] = useState<Pokemon | null>(null);
@@ -37,12 +37,23 @@ export function PokemonProvider({ children }: PropsWithChildren) {
 
     setCargando(true);
     setMensaje('');
+    // Instante de inicio para medir la duracion. En el plan free de Render la
+    // primera busqueda puede tardar ~1 minuto (el servicio estaba dormido).
+    const inicio = Date.now();
+    // Se registra QUE se va a buscar y CONTRA QUIEN antes de la peticion, para
+    // que la linea aparezca aunque la peticion tarde o falle.
+    log(`POST /api/pokemon/search name="${normalizedName}" -> ${API_URL}`);
+    // `estado` guarda el codigo HTTP real; queda en 0 si ni siquiera hubo
+    // respuesta (fallo de red / servicio caido). Asi el catch puede registrar
+    // una sola linea por busqueda, con o sin codigo.
+    let estado = 0;
     try {
-      const response = await fetch(`${apiUrl}/api/pokemon/search`, {
+      const response = await fetch(`${API_URL}/api/pokemon/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: normalizedName }),
       });
+      estado = response.status;
       if (!response.ok) {
         const detail = await response.json().catch(() => null);
         if (response.status === 400) throw new Error(detail?.error || 'Escribe el nombre de un Pokemon.');
@@ -50,10 +61,14 @@ export function PokemonProvider({ children }: PropsWithChildren) {
         throw new Error(detail?.error || 'No se pudo consultar el servicio');
       }
       const payload = await response.json();
-      setPokemon(payload.data?.[0] ?? null);
+      const encontrado = payload.data?.[0] ?? null;
+      setPokemon(encontrado);
+      log(`  ${estado} en ${Date.now() - inicio}ms: ${encontrado ? `encontrado "${encontrado.name}"` : 'sin resultados'}`);
     } catch (error) {
+      const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar el servicio.';
+      log(`  ${estado || 'sin respuesta'} en ${Date.now() - inicio}ms: ${mensajeError}`);
       setPokemon(null);
-      setMensaje(error instanceof Error ? error.message : 'No se pudo consultar el servicio.');
+      setMensaje(mensajeError);
     } finally {
       setCargando(false);
     }

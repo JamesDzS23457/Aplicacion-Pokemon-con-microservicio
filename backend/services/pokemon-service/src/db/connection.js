@@ -28,6 +28,20 @@ if (!CONNECTION_STRING) {
   );
 }
 
+// Host de la base de datos, SIN usuario ni contrasena, solo para los logs de
+// arranque. new URL() entiende "postgresql://..." y separa el host, asi que
+// lo que se imprime nunca incluye credenciales.
+//
+// Sirve para responder de un vistazo a "contra que base estoy hablando":
+// "localhost" = Postgres local; "aws-0-<region>.pooler.supabase.com" = Supabase.
+export const DB_HOST = (() => {
+  try {
+    return new URL(CONNECTION_STRING).hostname;
+  } catch {
+    return 'desconocido';
+  }
+})();
+
 // Ver la explicacion de SSL en onepiece-service/src/db/connection.js.
 // Resumen: por defecto se pide SSL (lo que exige Supabase), pero con
 // DATABASE_SSL=false se conecta a un Postgres local que no lo tenga.

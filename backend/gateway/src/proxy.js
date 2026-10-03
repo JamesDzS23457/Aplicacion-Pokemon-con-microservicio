@@ -6,9 +6,13 @@
 // justamente lo que el profesor pedia: el frontend no toca las APIs de
 // terceros, y el unico que las tocaba era el seed.
 //
-// Que NO hay logica aqui dentro: solo reenvia y normaliza fallos. Si un
-// microservicio esta caido, se responde 503, no se rompe el gateway entero.
+// Que NO hay logica aqui dentro: solo reenvia, registra y normaliza fallos.
+// Si un microservicio esta caido, se responde 503, no se rompe el gateway.
 // ---------------------------------------------------------------------------
+
+import { crearLog, clasificarDestino } from './lib/log.js';
+
+const log = crearLog('gateway');
 
 // Timeout de la peticion al microservicio.
 //
@@ -31,6 +35,21 @@ export async function proxy(serviceUrl, path, { method = 'GET', body } = {}) {
   // El .replace quita la barra final por si la URL ya venia con ella y
   // concatenar las dos podria dejar "//api/..." en el medio.
   const url = `${serviceUrl.replace(/\/$/, '')}${path}`;
+
+  // Datos para la linea de log. Se calculan ANTES de la peticion porque
+  // `destino` y `buscado` describen la INTENCION (a donde iba y que se
+  // buscaba), no el resultado.
+  const inicio = Date.now();
+  const destino = clasificarDestino(serviceUrl);
+  // Solo las busquedas traen cuerpo con `name`; en un listado o un GET por id
+  // no se anade nada a la linea.
+  const buscado = body?.name !== undefined ? ` name="${body.name}"` : '';
+
+  /** Escribe una unica linea por peticion con su resultado y duracion. */
+  const registrar = (status) => {
+    const ms = Date.now() - inicio;
+    log(`${method} ${path}${buscado} | destino=${destino} ${serviceUrl} | ${status} en ${ms}ms`);
+  };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -57,6 +76,7 @@ export async function proxy(serviceUrl, path, { method = 'GET', body } = {}) {
       payload = { error: 'Respuesta invalida del microservicio' };
     }
 
+    registrar(response.status);
     return { status: response.status, payload };
   } catch (error) {
     // AbortError = se paso el timeout. Cualquier otro error = conexion
@@ -69,6 +89,8 @@ export async function proxy(serviceUrl, path, { method = 'GET', body } = {}) {
     // credenciales: las URLs de servicio no llevan usuario ni clave.
     const isTimeout = error.name === 'AbortError';
     const detail = error.cause?.code || error.cause?.message || error.message;
+    registrar(503);
+    log(`  causa: ${detail}`);
     return {
       status: 503,
       payload: {

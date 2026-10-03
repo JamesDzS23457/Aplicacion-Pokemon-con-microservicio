@@ -16,8 +16,11 @@ import cors from 'cors';
 import pokemonRoutes from './routes/pokemon.routes.js';
 import characterRoutes from './routes/characters.routes.js';
 import indexRoutes from './routes/index.routes.js';
+import { config } from './config.js';
+import { crearLog, ENTORNO, clasificarDestino } from './lib/log.js';
 
 const app = express();
+const log = crearLog('gateway');
 
 // CORS abierto porque el frontend corre en otro origen (puerto 8081 de Expo
 // en desarrollo, o el dominio de Vercel en produccion). En un proyecto real
@@ -52,5 +55,11 @@ app.use((_req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`gateway escuchando en :${PORT}`);
+  // Al arrancar se dice en que entorno corre y a donde apunta cada
+  // microservicio, marcando si el destino es LOCAL o DESPLEGADO. Asi, con
+  // solo mirar las primeras lineas del log, ya se sabe si el frontend va a
+  // hablar con el backend local o con el de Render.
+  log(`ENTORNO=${ENTORNO} | escuchando en :${PORT}`);
+  log(`pokemon  -> ${config.POKEMON_SERVICE_URL} (${clasificarDestino(config.POKEMON_SERVICE_URL)})`);
+  log(`onepiece -> ${config.ONEPIECE_SERVICE_URL} (${clasificarDestino(config.ONEPIECE_SERVICE_URL)})`);
 });

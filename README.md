@@ -114,6 +114,40 @@ curl -X POST localhost:3000/api/characters/search \
   -H 'Content-Type: application/json' -d '{"name":"luffy"}'
 ```
 
+## Logs (saber qué se busca y contra quién)
+
+Cada búsqueda deja una línea en el log del proceso que la atiende. El formato
+empieza por el entorno, para responder de un vistazo a "¿esto es local o
+desplegado?":
+
+```
+[2026-10-02 18:45:03] [DESPLEGADO] [gateway] POST /api/pokemon/search name="pikachu" | destino=DESPLEGADO https://pokemon-service-rtjy.onrender.com | 200 en 320ms
+[2026-10-02 18:45:03] [DESPLEGADO] [pokemon-service] busqueda "pikachu" -> 1 resultado(s)
+[2026-10-02 18:45:03] [DESPLEGADO] [frontend] POST /api/pokemon/search name="pikachu" -> https://gateway-wm3a.onrender.com
+[2026-10-02 18:45:03] [DESPLEGADO] [frontend]   200 en 340ms: encontrado "pikachu"
+```
+
+Cómo decide cada pieza si es LOCAL o DESPLEGADO:
+
+| Proceso | Cómo lo detecta |
+|---|---|
+| Gateway y microservicios | Render define `RENDER=true`. Si la variable no está, es local. |
+| Frontend | Si `EXPO_PUBLIC_API_URL` es `localhost`/`127.0.0.1`, es local. |
+
+Al arrancar, cada microservicio dice además contra qué base de datos habla
+(el host, nunca las credenciales):
+
+```
+[2026-10-02 18:45:00] [DESPLEGADO] [pokemon-service] ENTORNO=DESPLEGADO | BD=aws-0-us-east-2.pooler.supabase.com | escuchando en :10000
+```
+
+- Los logs del backend salen en la terminal local y en Render → Logs.
+- Los del frontend salen en la consola del navegador (F12 → Console) o en la
+  terminal de Expo si es móvil.
+
+La ruta `GET /` del gateway también incluye `entorno` y `destinos`, por si se
+quiere ver sin mirar logs.
+
 ## Estructura del backend
 
 ```
@@ -148,8 +182,32 @@ Al usar una base de datos gestionada y no un archivo en disco, **el backend ya
 no depende del sistema de archivos del servidor**: funciona en Render, Railway,
 Vercel o cualquier host.
 
-El frontend web se despliega aparte (Vercel o Netlify) con
-`EXPO_PUBLIC_API_URL` apuntando al gateway.
+### Frontend en Vercel
+
+El frontend es una exportación estática de Expo (`expo export --platform web`),
+así que Vercel solo sirve archivos: no ejecuta Node en producción. El archivo
+`vercel.json` ya trae la configuración exacta:
+
+| Ajuste | Por qué |
+|---|---|
+| `buildCommand` | `npx expo export --platform web` genera la carpeta `dist/` |
+| `outputDirectory` | `dist` es lo que Vercel publica |
+| `framework: null` | Evita que Vercel detecte "Expo" y aplique su propio preset |
+| `rewrites` | expo-router es una SPA: toda ruta desconocida vuelve a `index.html` |
+
+`EXPO_PUBLIC_API_URL` se incrusta en el bundle **en tiempo de build**, no de
+ejecución. Por eso vive en `.env.production` (se commitea, no es secreta) y no
+basta con cambiarla después en Vercel. En producción apunta al gateway.
+
+Pasos:
+
+1. Importa este repositorio en Vercel (Add New → Project).
+2. Deja la configuración por defecto: manda `vercel.json`.
+3. Deploy. Cada `git push` a `main` vuelve a desplegar.
+4. (Opcional) Si prefieres definir la variable en el panel en vez de en
+   `.env.production`: Settings → Environment Variables →
+   `EXPO_PUBLIC_API_URL` = `https://gateway-wm3a.onrender.com`. El panel tiene
+   prioridad sobre los archivos `.env` del repo; vuelve a desplegar después.
 
 ### Si el gateway responde `503 "Microservicio no disponible"`
 
