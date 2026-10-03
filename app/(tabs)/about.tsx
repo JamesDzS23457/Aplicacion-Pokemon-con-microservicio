@@ -1,10 +1,149 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+// ---------------------------------------------------------------------------
+// PANTALLA: FICHA DE POKEMON
+//
+// Muestra el detalle completo del Pokemon que se busco en la pantalla
+// anterior. Comparte el PokemonContext, asi que no hace ninguna peticion
+// propia: solo lee el estado que ya esta cargado.
+// ---------------------------------------------------------------------------
+
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
+import { SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  EmptyState,
+  FadeIn,
+  Grid,
+  InfoTile,
+  Notice,
+  Pill,
+  ScreenHeader,
+  SectionTitle,
+} from '../../components/ui';
 import { usePokemon } from '../../context/PokemonContext';
+import { capitalize, formatHeight, formatWeight, prettyMove } from '../../lib/format';
+import { colors, pokemonTypeColors, radius, shadows, spacing } from '../../lib/theme';
 
 export default function PokemonDetailsScreen() {
   const { pokemon } = usePokemon();
   const moves = pokemon?.moves ?? [];
-  return <ScrollView contentContainerStyle={styles.container}>{pokemon ? <><Text style={styles.title}>{pokemon.name.toUpperCase()}</Text><Text style={styles.number}>#{pokemon.id}</Text><View style={styles.panel}><Text>Altura: {pokemon.height}</Text><Text>Peso: {pokemon.weight}</Text><Text>Especie: {pokemon.especie || 'N/A'}</Text></View><Text style={styles.heading}>Movimientos ({moves.length})</Text>{moves.map((item, index) => <Text key={`${item.move?.name}-${index}`} style={styles.row}>{String(index + 1).padStart(2, '0')} {item.move?.name ?? 'N/A'}</Text>)}</> : <><Text style={styles.title}>Datos Pokemon</Text><Text style={styles.text}>Busca un Pokemon en Home para ver sus datos.</Text></>}</ScrollView>;
+  const tipos = (pokemon?.types?.map((t) => t.type?.name).filter(Boolean) as string[]) ?? [];
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="dark" />
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <ScreenHeader
+          title={pokemon ? capitalize(pokemon.name) : 'Ficha Pokemon'}
+          subtitle={pokemon ? `Numero ${String(pokemon.id).padStart(3, '0')}` : 'Detalle del Pokemon'}
+          accent={colors.pokemon}
+          soft={colors.pokemonSoft}
+          icon={<Ionicons name="stats-chart" size={22} color={colors.pokemon} />}
+        />
+
+        {pokemon ? (
+          <FadeIn key={pokemon.id}>
+            {tipos.length > 0 ? (
+              <View style={styles.pillRow}>
+                {tipos.map((tipo) => (
+                  <Pill
+                    key={tipo}
+                    label={tipo}
+                    color={pokemonTypeColors[tipo] ?? colors.textSoft}
+                  />
+                ))}
+              </View>
+            ) : null}
+
+            <SectionTitle title="Caracteristicas" accent={colors.pokemon} />
+            <Grid>
+              <InfoTile
+                icon={<Ionicons name="resize-outline" size={18} color={colors.pokemon} />}
+                label="Altura"
+                value={formatHeight(pokemon.height)}
+                accent={colors.pokemon}
+                soft={colors.pokemonSoft}
+              />
+              <InfoTile
+                icon={<Ionicons name="barbell-outline" size={18} color={colors.pokemon} />}
+                label="Peso"
+                value={formatWeight(pokemon.weight)}
+                accent={colors.pokemon}
+                soft={colors.pokemonSoft}
+              />
+              <InfoTile
+                icon={<Ionicons name="male-female-outline" size={18} color={colors.pokemon} />}
+                label="Genero"
+                value={pokemon.genero || 'Sin dato'}
+                accent={colors.pokemon}
+                soft={colors.pokemonSoft}
+              />
+              <InfoTile
+                icon={<Ionicons name="leaf-outline" size={18} color={colors.pokemon} />}
+                label="Especie"
+                value={pokemon.especie || 'Sin dato'}
+                accent={colors.pokemon}
+                soft={colors.pokemonSoft}
+              />
+            </Grid>
+
+            <SectionTitle
+              title="Movimientos"
+              accent={colors.pokemon}
+              right={String(moves.length)}
+            />
+            {moves.length > 0 ? (
+              <View style={styles.moveWrap}>
+                {moves.map((item, index) => (
+                  <View key={`${item.move?.name}-${index}`} style={styles.moveChip}>
+                    <Text style={styles.moveText}>{prettyMove(item.move?.name)}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Notice text="Este Pokemon no tiene movimientos registrados." tone="info" />
+            )}
+          </FadeIn>
+        ) : (
+          <EmptyState
+            icon={<MaterialCommunityIcons name="pokeball" size={34} color={colors.pokemon} />}
+            title="Todavia sin datos"
+            message="Busca un Pokemon en la pestana Pokemon y aqui veras su ficha completa."
+            accent={colors.pokemon}
+            soft={colors.pokemonSoft}
+          />
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
 }
 
-const styles = StyleSheet.create({ container: { flexGrow: 1, padding: 24, backgroundColor: '#f7f9fb' }, title: { color: '#20242a', fontSize: 28, fontWeight: '700', textAlign: 'center' }, number: { color: '#159bd3', fontSize: 18, fontWeight: '700', textAlign: 'center', marginBottom: 24 }, panel: { gap: 16, padding: 18, borderRadius: 12, backgroundColor: '#fff', marginBottom: 28 }, heading: { color: '#20242a', fontSize: 18, fontWeight: '700', marginBottom: 12 }, row: { color: '#253d47', fontSize: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#d5e1e5' }, text: { color: '#4c5963', fontSize: 16, textAlign: 'center', marginTop: 18 } });
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.background },
+  content: {
+    flexGrow: 1,
+    width: '100%',
+    maxWidth: 560,
+    alignSelf: 'center',
+    padding: spacing.xl,
+    paddingBottom: spacing.xxl,
+  },
+
+  pillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+
+  moveWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  moveChip: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    ...shadows.soft,
+  },
+  moveText: { color: colors.text, fontSize: 13, fontWeight: '600' },
+});

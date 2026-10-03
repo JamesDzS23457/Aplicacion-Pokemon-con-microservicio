@@ -68,6 +68,7 @@ npm start          # o: npm run web
 | `npm run backend:setup` | Instala los 3 paquetes y corre el seed |
 | `npm run backend` | Levanta los 3 procesos con logs coloreados |
 | `npm run backend:seed` | Recarga los 20 personajes y 20 Pokémon (requiere internet) |
+| `npm run backend:datos` | Regenera `DATOS.md` consultando el gateway |
 | `npm run backend:verify` | Comprueba la BD, la búsqueda y el límite de 20 |
 | `npm run backend:offline-test` | Levanta el backend SIN red y comprueba que responde |
 
@@ -156,7 +157,7 @@ backend/
 ├── services/
 │   ├── pokemon-service/src/{db,repositories,services,routes,external,lib}/
 │   └── onepiece-service/src/{db,repositories,services,routes,external,lib}/
-└── scripts/{seed,seed-characters,seed-pokemon,verify,dev}.js
+└── scripts/{seed,seed-characters,seed-pokemon,generate-datos,verify,dev}.js
 ```
 
 | Capa | Responsabilidad |
@@ -168,6 +169,20 @@ backend/
 
 Aislar el SQL en `repositories/` es lo que permitió cambiar de SQLite a
 PostgreSQL sin tocar el resto del sistema.
+
+## Interfaz
+
+El diseño vive en dos piezas compartidas, para que las cuatro pantallas no se
+desincronicen:
+
+- `lib/theme.ts`: colores, espaciados, radios y sombras. Cada sección tiene su
+  acento (azul para Pokémon, coral para One Piece).
+- `components/ui.tsx`: encabezado, buscador, mosaicos de datos, estados vacíos,
+  avisos y animación de entrada. Las pantallas solo componen estas piezas.
+
+Los valores técnicos se humanizan antes de mostrarse: la altura y el peso de
+PokéAPI (decímetros y hectogramos) pasan a metros y kilos, y las recompensas de
+One Piece se agrupan con separador de miles (`฿ 3.000.000.000`).
 
 ## Despliegue
 
@@ -250,5 +265,8 @@ está roto.
   y la URL del retrato se guarda en `image_url`. Wikipedia (`429` sistemático) y
   el CDN de Fandom (bloqueo de Cloudflare) quedaron descartados. En el flujo
   normal de búsqueda el backend nunca sale a internet.
-- Los datos de One Piece vienen en **francés** (`"19 ans"`, `"vivant"`) y se
-  muestran sin traducir.
+- Los datos de One Piece vienen mezclados en **francés e inglés** (`"19 ans"`,
+  `"vivant"`, `"Captain"`). Se traducen **en el seed** con el mapa curado
+  `lib/translations.js`, así que la base de datos, la API y la app ya guardan y
+  muestran español. Las descripciones largas de las frutas se dejaron en su
+  idioma original porque no se muestran en las pantallas principales.
