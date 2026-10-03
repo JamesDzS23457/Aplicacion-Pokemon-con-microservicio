@@ -245,7 +245,10 @@ está roto.
   con `raceEstimated: true`.
 - **`genero`** de Pokémon se deduce del *gender rate* de la especie
   (probabilidad), no del género real. No existe endpoint que lo devuelva.
-- **Imágenes de One Piece**: `image` es `null`. La API de Wikipedia devuelve
-  `429` de forma sistemática, así que no se cargan imágenes.
+- **Imágenes de One Piece**: se resuelven **solo en el seed** consultando el
+  índice de personajes de **Jikan (MyAnimeList)** en `external/jikan.client.js`,
+  y la URL del retrato se guarda en `image_url`. Wikipedia (`429` sistemático) y
+  el CDN de Fandom (bloqueo de Cloudflare) quedaron descartados. En el flujo
+  normal de búsqueda el backend nunca sale a internet.
 - Los datos de One Piece vienen en **francés** (`"19 ans"`, `"vivant"`) y se
   muestran sin traducir.

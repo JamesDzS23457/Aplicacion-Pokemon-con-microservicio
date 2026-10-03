@@ -13,8 +13,17 @@
 
 import * as repo from '../services/onepiece-service/src/repositories/characters.repository.js';
 import * as client from '../services/onepiece-service/src/external/onepiece.client.js';
+import { findCharacterImage } from '../services/onepiece-service/src/external/jikan.client.js';
 import { getRace } from '../services/onepiece-service/src/external/raceMap.js';
 import { normalizeName } from '../services/onepiece-service/src/lib/normalize.js';
+
+// Pausa entre personajes. Por cada uno se pide su detalle a api-onepiece.com.
+// Las imagenes no suman peticiones por personaje: se bajan una sola vez de
+// Jikan en un indice cacheado (ver external/jikan.client.js). Sin pausa
+// serian 20 peticiones seguidas a api-onepiece.com y algunas APIs lo toman
+// por abuso y responden 429. Con 150ms el seed entero aguanta educado y solo
+// suma unos 3 segundos.
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Los 20 personajes que se guardan.
 //
@@ -68,6 +77,10 @@ export async function seedCharacters() {
 
     const details = await client.getCharacterById(ref.id);
     const race = getRace(details.name);
+    // La imagen se saca de Jikan/MyAnimeList porque la API de One Piece no la
+    // trae (ver external/jikan.client.js). Puede devolver null: en ese caso
+    // la ficha muestra el recuadro "OP", no un hueco roto.
+    const image_url = await findCharacterImage(details.name);
 
     await repo.upsert({
       id: details.id,
@@ -83,15 +96,18 @@ export async function seedCharacters() {
       fruit_name: details.fruit?.name ?? null,
       fruit_type: details.fruit?.type ?? null,
       fruit_description: details.fruit?.description ?? null,
-      // Sin imagen: Wikipedia devuelve 429 de forma sistematica, asi que
-      // guardar un valor aleatorio seria peor que guardar null.
-      image_url: null,
+      image_url,
       race: race.race,
       race_estimated: race.estimated,
     });
 
     saved += 1;
-    console.log(`  + ${details.name} (raza: ${race.race}${race.estimated ? ' [estimada]' : ''})`);
+    console.log(
+      `  + ${details.name} (raza: ${race.race}${race.estimated ? ' [estimada]' : ''}${image_url ? ', con imagen' : ', SIN imagen'})`,
+    );
+
+    // Respiro para no saturar las APIs externas (ver comentario del helper).
+    await sleep(150);
   }
 
   return { saved, missing };
