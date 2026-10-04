@@ -4,8 +4,8 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
-    "expo": "~57.0.24",
-    "expo-router": "~57.0.22",
+    "expo": "~57.0.26",
+    "expo-router": "~57.0.24",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
