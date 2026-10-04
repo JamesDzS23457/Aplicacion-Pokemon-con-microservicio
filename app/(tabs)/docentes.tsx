@@ -24,6 +24,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useRef, useState } from 'react';
 import { RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ChipFiltro, TarjetaDocente } from '../../components/docentes';
 import {
   EmptyState,
   LoadingCard,
@@ -33,10 +34,9 @@ import {
   SearchBar,
   SectionTitle,
 } from '../../components/ui';
-import { ChipFiltro, TarjetaDocente, colorDeFacultad } from '../../components/docentes';
-import { useDocentes } from '../../context/DocentesContext';
 import type { Docente } from '../../context/DocentesContext';
-import { colors, radius, shadows, spacing } from '../../lib/theme';
+import { useDocentes } from '../../context/DocentesContext';
+import { colors, radius, spacing } from '../../lib/theme';
 
 export default function DocentesScreen() {
   const router = useRouter();
@@ -128,7 +128,7 @@ export default function DocentesScreen() {
       >
         <ScreenHeader
           title="Docentes"
-          subtitle="Docentes de la Universidad Privada Nacional Guillermo CMOS Valderrama"
+          subtitle="Docentes de la Universidad Privada Uninpahu"
           accent={colors.docentes}
           soft={colors.docentesSoft}
           icon={<MaterialCommunityIcons name="account-school" size={22} color={colors.docentes} />}
@@ -261,7 +261,7 @@ const styles = StyleSheet.create({
   },
   // Margen bajo el campo de busqueda para el boton de refresco.
   refreshRow: { marginTop: spacing.md, marginBottom: spacing.lg },
-  chips: { gap: spacing.sm, paddingRight: spacing.lg },
+  chips: { gap: spacing.xs, paddingRight: spacing.md },
   notaPie: {
     flexDirection: 'row',
     alignItems: 'flex-start',

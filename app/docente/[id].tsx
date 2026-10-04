@@ -29,7 +29,7 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { EmptyState, LoadingCard, Notice, Pill, SectionTitle } from '../../components/ui';
 import { BotonLeerMas, FotoDocente, EtiquetaDato, colorDeFacultad } from '../../components/docentes';
@@ -43,6 +43,7 @@ export default function FichaDocenteScreen() {
   // `id` llega como string: expo-router lo entrega desde la ruta, no desde
   // Typescript. `Number` de "abc" da NaN, y eso se comprueba abajo.
   const { id } = useLocalSearchParams<{ id: string }>();
+  const scrollRef = useRef<ScrollView>(null);
 
   const [docente, setDocente] = useState<Docente | null>(null);
   const [cargando, setCargando] = useState(true);
@@ -80,6 +81,7 @@ export default function FichaDocenteScreen() {
     // contra el microservicio. Si `enMemoria` es null (entrada directa por URL)
     // se arranca en blanco hasta que llegue la respuesta, que es lo correcto.
     setDocente(enMemoria);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
     void cargar();
     // `enMemoria` cambia de identidad en cada render; depender de el provocaria
     // un bucle. Solo interesa recargar al cambiar de docente (o sea, de id).
@@ -126,34 +128,35 @@ export default function FichaDocenteScreen() {
         </Text>
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={cargando}
-            onRefresh={cargar}
-            colors={[colors.docentes]}
-            tintColor={colors.docentes}
-          />
-        }
-      >
-        {mensaje ? <Notice text={mensaje} tone={tono} /> : null}
-        {cargando && !docente ? (
-          <LoadingCard accent={colors.docentes} label="Cargando ficha..." />
-        ) : null}
-
-        {docente ? (
-          <>
-            {/* --- Encabezado con la foto grande ---------------------------- */}
-            <View style={styles.hero}>
-              <FotoDocente docente={docente} tamano={128} />
-              <Text style={styles.heroNombre}>{docente.nombre}</Text>
-              {docente.cargo ? <Text style={styles.heroCargo}>{docente.cargo}</Text> : null}
-              <View style={styles.pillRow}>
-                {docente.facultad ? <Pill label={docente.facultad} color={color} /> : null}
-              </View>
+      {docente ? (
+        <>
+          {/* --- Encabezado fijo con la foto grande ---------------------------- */}
+          <View style={styles.heroFijo}>
+            <FotoDocente docente={docente} tamano={128} />
+            <Text style={styles.heroNombre}>{docente.nombre}</Text>
+            {docente.cargo ? <Text style={styles.heroCargo}>{docente.cargo}</Text> : null}
+            <View style={styles.pillRow}>
+              {docente.facultad ? <Pill label={docente.facultad} color={color} /> : null}
             </View>
+          </View>
+
+          <ScrollView
+            ref={scrollRef}
+            contentContainerStyle={styles.content}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={cargando}
+                onRefresh={cargar}
+                colors={[colors.docentes]}
+                tintColor={colors.docentes}
+              />
+            }
+          >
+            {mensaje ? <Notice text={mensaje} tone={tono} /> : null}
+            {cargando && !docente ? (
+              <LoadingCard accent={colors.docentes} label="Cargando ficha..." />
+            ) : null}
 
             {/* --- Datos de contacto y ubicacion ---------------------------- */}
             <View style={styles.tarjetaDatos}>
@@ -171,12 +174,6 @@ export default function FichaDocenteScreen() {
             </View>
 
             {/* --- La descripcion COMPLETA ---------------------------------- */}
-            {/*
-              Aqui va `biografia`, no `resumen`. Son campos distintos de la base
-              de datos a proposito: la pestana muestra el resumen y esta pagina
-              muestra todo. Si se usara el mismo campo en las dos, "Leer mas" no
-              haria nada.
-            */}
             <SectionTitle title="Descripcion completa" accent={colors.docentes} />
             <View style={styles.tarjetaTexto}>
               <Text style={styles.biografia}>{docente.biografia || 'Sin biografia disponible.'}</Text>
@@ -210,10 +207,6 @@ export default function FichaDocenteScreen() {
             ) : null}
 
             {/* --- Resumen, al pie y en pequeño ---------------------------- */}
-            {/* Se vuelve a mostrar el resumen breve, pero con una etiqueta que
-                dice de donde sale. Puede parecer redundante, y lo es a
-                proposito: asi se ve de un vistazo la diferencia entre el texto
-                corto de la tarjeta y este, que es el requisito del enunciado. */}
             {docente.resumen ? (
               <View style={styles.resumenPie}>
                 <Text style={styles.resumenPieEtiqueta}>EN UNA LINEA</Text>
@@ -221,13 +214,28 @@ export default function FichaDocenteScreen() {
               </View>
             ) : null}
 
-            {/* El boton "Leer mas" en su version compacta, ya en la ficha. Se
-                mantiene el mismo texto que en la tarjeta para que el usuario
-                sepa donde pulsa y por donde entro. */}
             <BotonLeerMas docente={docente} compacto />
-          </>
-        ) : null}
-      </ScrollView>
+          </ScrollView>
+        </>
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={cargando}
+              onRefresh={cargar}
+              colors={[colors.docentes]}
+              tintColor={colors.docentes}
+            />
+          }
+        >
+          {mensaje ? <Notice text={mensaje} tone={tono} /> : null}
+          {cargando && !docente ? (
+            <LoadingCard accent={colors.docentes} label="Cargando ficha..." />
+          ) : null}
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -279,8 +287,20 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     padding: spacing.xl,
     paddingBottom: spacing.xxl,
+    paddingTop: spacing.md,
   },
 
+  heroFijo: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+    padding: spacing.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.md,
+    ...shadows.card,
+  },
   hero: {
     backgroundColor: colors.surface,
     borderRadius: radius.xl,

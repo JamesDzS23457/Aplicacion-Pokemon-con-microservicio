@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, facultadColors, radius, shadows, spacing, type } from '../lib/theme';
@@ -178,7 +179,7 @@ export function TarjetaDocente({
         {docente.resumen || 'Sin descripcion disponible.'}
       </Text>
 
-      <BotonLeerMas docente={docente} />
+      <BotonLeerMas docente={docente} onPress={onPress} />
     </Pressable>
   );
 }
@@ -203,11 +204,19 @@ export function BotonLeerMas({
   /** Version para la ficha, donde el boton va suelto al pie de la pagina. */
   compacto?: boolean;
 }) {
+  const router = useRouter();
   const color = colorDeFacultad(docente.facultad);
+  const handlePress = () => {
+    if (onPress) {
+      onPress(docente);
+      return;
+    }
+    router.push(`/docente/${docente.id}`);
+  };
 
   return (
     <Pressable
-      onPress={() => (onPress ? onPress(docente) : undefined)}
+      onPress={handlePress}
       accessibilityRole="button"
       accessibilityLabel={`Leer mas sobre ${docente.nombre}`}
       style={({ pressed }) => [
@@ -313,14 +322,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    gap: 5,
+    gap: 4,
     marginTop: spacing.sm,
-    paddingVertical: 4,
-    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    paddingHorizontal: spacing.xs + 2,
     borderRadius: radius.pill,
     maxWidth: '100%',
   },
-  carreraTexto: { fontSize: 11, fontWeight: '700', flexShrink: 1 },
+  carreraTexto: { fontSize: 10, fontWeight: '700', flexShrink: 1 },
   tarjetaResumen: {
     color: colors.textSoft,
     fontSize: type.body - 1,
@@ -348,15 +357,21 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingVertical: 7,
-    paddingHorizontal: spacing.md,
+    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: spacing.sm,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
+    maxWidth: 200,
   },
-  chipTexto: { color: colors.textSoft, fontSize: type.small + 1, fontWeight: '700' },
+  chipTexto: {
+    color: colors.textSoft,
+    fontSize: type.small,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
   chipTextoActivo: { color: '#ffffff' },
 
   // --- Etiqueta de dato ----------------------------------------------------
