@@ -30,7 +30,10 @@ app.use(cors());
 
 // express.json() lee el cuerpo de las peticiones POST y lo convierte a objeto.
 // Sin esto, req.body.name seria undefined y toda busqueda daria 400.
-app.use(express.json({ limit: '10kb' }));
+// El limite es 64kb (igual que el tope del microservicio de docentes): una
+// ficha de docente con biografia larga y dos listas cabe de sobra, y un cuerpo
+// mayor es un error, no un docente.
+app.use(express.json({ limit: '64kb' }));
 
 // Ninguna respuesta del gateway se puede cachear.
 //

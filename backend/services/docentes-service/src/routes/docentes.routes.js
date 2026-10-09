@@ -10,21 +10,14 @@
 // apareciera un SELECT aqui, la arquitectura del proyecto estaria rota.
 //
 // -----------------------------------------------------------------------------
-// TODAS LAS RUTAS SON GET, Y NO POR CASUALIDAD
+// LECTURA Y ESCRITURA
 // -----------------------------------------------------------------------------
-// El enunciado pide path params o query params, nunca body params. Como no hay
-// ninguna ruta POST/PUT/PATCH/DELETE, no existe forma de mandar datos en el
-// cuerpo: el unico metodo que este servicio atiende es GET. Los parametros
-// viajan en la URL:
-//
-//   GET /api/docentes?q=ana&carrera=Ingenieria     <- QUERY PARAMS
-//   GET /api/docentes/buscar/ana                   <- PATH PARAM
-//   GET /api/docentes/7                            <- PATH PARAM
-//
-// Los query params se leen con `new URL(..., base).searchParams`, que es la
-// clase estandar de Node: no hay que instalar ni un solo paquete para entender
-// "?q=ana&carrera=Ingenieria".
-//
+// Las rutas GET leen y llevan sus parametros en la URL (query params y path
+// params). Las rutas POST/PUT/DELETE escriben y reciben un JSON en el cuerpo,
+// ya parseado en `ctx.body` por src/server.js. El `id` de PUT/DELETE sigue
+// siendo un PATH PARAM: lo que identifica al recurso va en la ruta, lo que lo
+// describe va en el cuerpo.
+// ---------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // ORDEN DE LAS RUTAS: IMPORTA
 // -----------------------------------------------------------------------------
@@ -80,8 +73,9 @@ export function registrarRutas(router) {
     json(ctx.res, 200, {
       service: 'docentes-service',
       descripcion:
-        'Datos de docentes de Uninpahu. Servicio de solo lectura: todos sus ' +
-        'parametros viajan en la URL (path params y query params), nunca en el cuerpo.',
+        'Datos de docentes de Uninpahu. Las consultas viajan en la URL (path ' +
+        'params y query params); la escritura (POST/PUT/DELETE) recibe un JSON ' +
+        'en el cuerpo.',
       documentacion: '/docs',
       contrato: '/openapi.json',
       salud: '/health',
@@ -126,12 +120,42 @@ export function registrarRutas(router) {
   // -------------------------------------------------------------------------
   // Ficha de un docente. PATH PARAM.
   //
-  // Va la ULTIMA a proposito: `:id` coincide con cualquier segmento, asi que
-  // cualquier ruta literal que se declare despues de esta quedaria oculta.
+  // Va la ULTIMA de las GET a proposito: `:id` coincide con cualquier segmento,
+  // asi que cualquier ruta literal que se declare despues de esta quedaria
+  // oculta.
   // -------------------------------------------------------------------------
   router.get('/api/docentes/:id', async (ctx) => {
     const docente = await service.getDocenteById(ctx.params.id);
     log(`ficha id=${ctx.params.id} -> ${docente.nombre}`);
     json(ctx.res, 200, docente);
+  });
+
+  // -------------------------------------------------------------------------
+  // Crear un docente. El cuerpo trae el JSON con los datos; el id lo asigna el
+  // servicio. Responde 201 con la fila creada.
+  // -------------------------------------------------------------------------
+  router.post('/api/docentes', async (ctx) => {
+    const creado = await service.crearDocente(ctx.body);
+    log(`alta "${creado.nombre}" -> id=${creado.id}`);
+    json(ctx.res, 201, creado);
+  });
+
+  // -------------------------------------------------------------------------
+  // Actualizar un docente. El id va en el PATH y los campos nuevos en el cuerpo.
+  // Solo se tocan los campos que vienen; los demas quedan igual.
+  // -------------------------------------------------------------------------
+  router.put('/api/docentes/:id', async (ctx) => {
+    const actualizado = await service.actualizarDocente(ctx.params.id, ctx.body);
+    log(`edicion id=${ctx.params.id} -> ${actualizado.nombre}`);
+    json(ctx.res, 200, actualizado);
+  });
+
+  // -------------------------------------------------------------------------
+  // Borrar un docente. Solo necesita el id del PATH; no lee ningun cuerpo.
+  // -------------------------------------------------------------------------
+  router.delete('/api/docentes/:id', async (ctx) => {
+    const borrado = await service.eliminarDocente(ctx.params.id);
+    log(`baja id=${ctx.params.id}`);
+    json(ctx.res, 200, borrado);
   });
 }

@@ -42,10 +42,10 @@ export const openapi = {
       'servicio es el driver `pg`, porque Node no incluye un cliente de',
       'PostgreSQL en su biblioteca estandar.',
       '',
-      '**Parametros:** todos viajan en la URL, nunca en el cuerpo. Se usan',
-      '*path params* (`:id`, `:termino`) y *query params* (`?q=`, `?carrera=`).',
-      'El servicio es de SOLO LECTURA: solo atiende GET, y cualquier otro metodo',
-      'recibe un 405 con la cabecera `Allow: GET`.',
+      '**Parametros:** las consultas viajan en la URL: *path params* (`:id`,',
+      '`:termino`) y *query params* (`?q=`, `?carrera=`). La escritura usa JSON',
+      'en el cuerpo: `POST /api/docentes` crea, `PUT /api/docentes/:id`',
+      'actualiza y `DELETE /api/docentes/:id` borra.',
       '',
       '**Datos:** salen de una base PostgreSQL en Supabase, editada a mano en el',
       'Table Editor. Un trigger recalcula `search_key`, `carrera_key` y',
@@ -64,8 +64,9 @@ export const openapi = {
     {
       name: 'Docentes',
       description:
-        'Consulta de los docentes guardados. Los filtros son query params y la ' +
-        'ficha se pide por path param.',
+        'Consulta y edicion de los docentes guardados. Los filtros son query ' +
+        'params, la ficha se pide por path param y la escritura recibe JSON en ' +
+        'el cuerpo.',
     },
     { name: 'Salud', description: 'Estado del servicio.' },
     { name: 'Documentacion', description: 'El contrato y esta misma interfaz.' },
@@ -175,6 +176,52 @@ export const openapi = {
           },
           500: {
             description: 'La base de datos no responde.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' },
+              },
+            },
+          },
+        },
+      },
+      post: {
+        tags: ['Docentes'],
+        summary: 'Agrega un docente nuevo',
+        description: [
+          'Inserta un docente con los datos del cuerpo. El `id` lo asigna el',
+          'servicio (no se manda): es el siguiente disponible. El `nombre` es',
+          'obligatorio y unico; el resto de campos son opcionales. `areas` y',
+          '`formacion` son listas de texto.',
+          '',
+          'La tabla admite maximo 20 docentes: si esta llena, responde 409.',
+        ].join('\n'),
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DocenteInput' },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'El docente creado, con su id asignado.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Docente' },
+              },
+            },
+          },
+          400: {
+            description: 'Falta el nombre o algun campo no es valido.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' },
+              },
+            },
+          },
+          409: {
+            description: 'Ya existe un docente con ese nombre, o la tabla esta llena.',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/Error' },
@@ -317,6 +364,113 @@ export const openapi = {
           },
         },
       },
+      put: {
+        tags: ['Docentes'],
+        summary: 'Actualiza un docente',
+        description: [
+          'Actualiza los campos que vengan en el cuerpo; los que no vengan',
+          'quedan igual. El `id` va en el path, nunca en el cuerpo.',
+        ].join('\n'),
+        parameters: [
+          {
+            in: 'path',
+            name: 'id',
+            required: true,
+            description: 'Identificador del docente (numero entero).',
+            schema: { type: 'integer', minimum: 1 },
+            example: 1,
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DocenteInput' },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'La ficha actualizada.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Docente' },
+              },
+            },
+          },
+          400: {
+            description: 'El id no es valido, el cuerpo no es JSON o no trae campos.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' },
+              },
+            },
+          },
+          404: {
+            description: 'No hay ningun docente con ese id.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' },
+              },
+            },
+          },
+          409: {
+            description: 'Otro docente ya tiene ese nombre.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' },
+              },
+            },
+          },
+        },
+      },
+      delete: {
+        tags: ['Docentes'],
+        summary: 'Borra un docente',
+        description:
+          'Borra el docente con ese id. No lleva cuerpo: solo necesita el path param.',
+        parameters: [
+          {
+            in: 'path',
+            name: 'id',
+            required: true,
+            description: 'Identificador del docente (numero entero).',
+            schema: { type: 'integer', minimum: 1 },
+            example: 1,
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Confirmacion con el id borrado.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'integer', example: 1 },
+                  },
+                },
+              },
+            },
+          },
+          400: {
+            description: 'El id no es un numero entero.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' },
+              },
+            },
+          },
+          404: {
+            description: 'No hay ningun docente con ese id.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' },
+              },
+            },
+          },
+        },
+      },
     },
 
     '/openapi.json': {
@@ -404,6 +558,35 @@ export const openapi = {
             description: 'Formacion academica, de mayor a menor grado.',
             items: { type: 'string' },
             example: ['Doctor en Matematica Aplicada, UTN', 'Licenciatura en Matematica, UNA'],
+          },
+        },
+      },
+      DocenteInput: {
+        type: 'object',
+        description:
+          'Datos para crear o actualizar un docente. Solo `nombre` es ' +
+          'obligatorio al crear; al actualizar, solo se tocan los campos que ' +
+          'vengan. El `id` nunca se manda: lo asigna el servicio.',
+        required: ['nombre'],
+        properties: {
+          nombre: { type: 'string', example: 'Ana Beatriz Rios' },
+          cargo: { type: 'string', example: 'Profesora Titular' },
+          departamento: { type: 'string', example: 'Departamento de Matematica' },
+          carrera: { type: 'string', example: 'Ingenieria en Sistemas' },
+          facultad: { type: 'string', example: 'Facultad de Ingenieria' },
+          email: { type: 'string', example: 'abrios@uninpahu.edu.py' },
+          foto_url: { type: 'string', description: 'URL publica de la foto (opcional).' },
+          resumen: { type: 'string', description: 'Descripcion breve para la tarjeta.' },
+          biografia: { type: 'string', description: 'Descripcion completa para la ficha.' },
+          areas: {
+            type: 'array',
+            items: { type: 'string' },
+            example: ['Modelado numerico'],
+          },
+          formacion: {
+            type: 'array',
+            items: { type: 'string' },
+            example: ['Doctor en Matematica Aplicada, UTN'],
           },
         },
       },

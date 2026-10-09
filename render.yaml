@@ -84,10 +84,10 @@ services:
   # sin swagger-jsdoc ni swagger-ui-express: Swagger UI se carga desde un CDN
   # dentro de una pagina HTML propia.
   #
-  # El servicio es de SOLO LECTURA (solo GET). Eso no es casualidad: el
-  # enunciado pide que los datos viajen por path params y query params, nunca
-  # por body. Sin verbos que escriban, no hay forma de tener un body, asi que
-  # la restriccion se cumple por construccion y no por disciplina.
+  # El servicio expone GET (consultas por path/query params) y POST/PUT/DELETE
+  # (escritura con JSON en el cuerpo, leido con tope de tamano). Sigue sin usar
+  # ningun framework: enrutado, CORS, 405, 404 y lectura del cuerpo estan
+  # escritos a mano sobre `node:http`.
   # ---------------------------------------------------------------
   - type: web
     name: docentes-service

@@ -143,3 +143,160 @@ export async function listarFacetas() {
     departamento: facetas.departamento,
   };
 }
+
+// ---------------------------------------------------------------------------
+// ESCRITURA (CRUD)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normaliza un campo de texto opcional: recorta espacios y convierte "" en
+ * null, para no guardar cadenas vacias en la base.
+ *
+ * Devuelve `undefined` (y no null) cuando el campo NO VENIA en el cuerpo: asi
+ * actualizarDocente distingue "no lo toques" (ausente) de "dejalo vacio"
+ * (vacio o null explicito). Sin esa distincion, un PUT con solo `{"cargo":...}`
+ * pondria el resto de columnas en null y borraria datos sin avisar.
+ */
+function textoOpcional(valor) {
+  if (valor === undefined) return undefined;
+  if (valor === null) return null;
+  const texto = String(valor).trim();
+  return texto === '' ? null : texto;
+}
+
+/**
+ * Normaliza una lista (areas, formacion): acepta array o texto con un elemento
+ * por linea, recorta cada elemento y quita los vacios.
+ *
+ * Igual que textoOpcional: ausente es `undefined` (no se toca) y null es []
+ * (se vacia a proposito).
+ */
+function listaOpcional(valor) {
+  if (valor === undefined) return undefined;
+  if (valor === null) return [];
+  const elementos = Array.isArray(valor) ? valor : String(valor).split('\n');
+  return elementos.map((e) => String(e).trim()).filter((e) => e !== '');
+}
+
+/**
+ * Valida que el email, si viene, tenga forma de email.
+ *
+ * No se verifica que el dominio exista: eso seria salir a internet en tiempo de
+ * peticion, y este servicio responde siempre solo con la base.
+ */
+function validarEmail(email) {
+  if (email === null || email === undefined) return;
+  if (!/\S+@\S+\.\S+/.test(email)) {
+    throw httpError('El email no tiene un formato valido.', 400);
+  }
+}
+
+/**
+ * Limpia el cuerpo de una peticion de escritura y lo deja en forma de docente.
+ *
+ * Es la lista blanca de campos: lo que no sea un campo escribible (id,
+ * search_key, *_key, created_at...) se ignora aunque venga en el cuerpo.
+ * `requerirNombre` distingue crear (el nombre es obligatorio) de actualizar
+ * (puede no venir, pero si viene no puede quedar vacio).
+ */
+function limpiarCuerpo(body, { requerirNombre }) {
+  if (body === null || body === undefined || typeof body !== 'object' || Array.isArray(body)) {
+    throw httpError('El cuerpo debe ser un objeto JSON con los datos del docente.', 400);
+  }
+
+  const datos = {
+    nombre: body.nombre === undefined ? undefined : textoOpcional(body.nombre),
+    cargo: textoOpcional(body.cargo),
+    departamento: textoOpcional(body.departamento),
+    carrera: textoOpcional(body.carrera),
+    facultad: textoOpcional(body.facultad),
+    email: textoOpcional(body.email),
+    foto_url: textoOpcional(body.foto_url),
+    resumen: textoOpcional(body.resumen),
+    biografia: textoOpcional(body.biografia),
+    areas: listaOpcional(body.areas),
+    formacion: listaOpcional(body.formacion),
+  };
+
+  if (requerirNombre && !datos.nombre) {
+    throw httpError('El nombre del docente es obligatorio.', 400);
+  }
+  if (datos.nombre !== undefined && !datos.nombre) {
+    throw httpError('El nombre del docente no puede quedar vacio.', 400);
+  }
+  if (datos.email !== undefined) validarEmail(datos.email);
+
+  return datos;
+}
+
+/**
+ * Traduce un error de Postgres a error de negocio.
+ *
+ * - 23505 (unique_violation en `nombre`): otro docente ya tiene ese nombre -> 409.
+ * - 'Limite de 20 docentes alcanzado' (trigger): la tabla esta llena -> 409.
+ */
+function traducirErrorPostgres(error) {
+  if (error?.code === '23505') {
+    throw httpError('Ya existe un docente con ese nombre.', 409);
+  }
+  if (/Limite de 20 docentes alcanzado/.test(error?.message || '')) {
+    throw httpError('Limite de 20 docentes alcanzado. Borra uno antes de agregar otro.', 409);
+  }
+  throw error;
+}
+
+/** POST: inserta un docente nuevo. El id lo asigna el servicio. */
+export async function crearDocente(body) {
+  const datos = limpiarCuerpo(body, { requerirNombre: true });
+
+  try {
+    return await repo.insert(datos);
+  } catch (error) {
+    traducirErrorPostgres(error);
+  }
+}
+
+/** PUT: reemplaza los campos dados de un docente existente. */
+export async function actualizarDocente(id, body) {
+  const numerico = Number(id);
+  if (!Number.isInteger(numerico) || numerico < 1) {
+    throw httpError('El id debe ser un numero entero', 400);
+  }
+
+  const datos = limpiarCuerpo(body, { requerirNombre: false });
+  const cambios = {};
+  for (const [clave, valor] of Object.entries(datos)) {
+    // `undefined` = el campo no venia en el cuerpo y no se toca. Solo entra lo
+    // que el cliente mando de verdad.
+    if (valor === undefined) continue;
+    cambios[clave] = valor;
+  }
+  if (Object.keys(cambios).length === 0) {
+    throw httpError('No hay campos para actualizar.', 400);
+  }
+
+  try {
+    const actualizado = await repo.updateById(numerico, cambios);
+    if (!actualizado) {
+      throw httpError('Docente no encontrado', 404);
+    }
+    return actualizado;
+  } catch (error) {
+    if (error?.status) throw error;
+    traducirErrorPostgres(error);
+  }
+}
+
+/** DELETE: borra un docente por id. */
+export async function eliminarDocente(id) {
+  const numerico = Number(id);
+  if (!Number.isInteger(numerico) || numerico < 1) {
+    throw httpError('El id debe ser un numero entero', 400);
+  }
+
+  const borrado = await repo.remove(numerico);
+  if (!borrado) {
+    throw httpError('Docente no encontrado', 404);
+  }
+  return { id: borrado.id };
+}

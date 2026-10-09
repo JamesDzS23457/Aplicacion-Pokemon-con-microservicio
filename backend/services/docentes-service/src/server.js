@@ -13,18 +13,21 @@
 // -----------------------------------------------------------------------------
 // EL ORDEN DE LAS COMPROBACIONES
 // -----------------------------------------------------------------------------
-//   1. OPTIONS      -> 204. El navegador lo manda solo, antes del GET, para
-//                      preguntar si puede hacer la peticion. Si no se responde,
-//                      la peticion real nunca sale y el error que ve el
+//   1. OPTIONS      -> 204. El navegador lo manda solo, antes del POST/PUT/DELETE,
+//                      para preguntar si puede hacer la peticion. Si no se
+//                      responde, la peticion real nunca sale y el error que ve el
 //                      desarrollador es "CORS", no el problema real.
-//   2. metodo       -> 405 si no es GET. Este servicio es de SOLO LECTURA: no
-//                      hay ninguna ruta que modifique datos, asi que un POST
-//                      tiene que fallar de forma explicita.
+//   2. metodo       -> 405 si no es GET/POST/PUT/DELETE. Los GET leen, los demas
+//                      escriben; cualquier otro verbo falla de forma explicita.
 //   3. ruta         -> 404 si el router no encuentra ninguna.
-//   4. manejador    -> por ultimo, dentro de un try/catch que convierte
+//   4. cuerpo       -> solo en POST/PUT se lee el JSON del cuerpo (con tope de
+//                      tamano). Un JSON roto es 400 aqui, antes de llegar a la
+//                      ruta, porque ninguna regla de negocio puede evaluarse sin
+//                      el dato.
+//   5. manejador    -> por ultimo, dentro de un try/catch que convierte
 //                      cualquier error en JSON con su codigo.
 //
-// El manejador se busca en el paso 3 y se EJECUTA en el paso 4 a proposito:
+// El manejador se busca en el paso 3 y se EJECUTA en el paso 5 a proposito:
 // separarlos permite distinguir "no existe" (404) de "existe pero fallo" (400,
 // 404 o 500 segun la capa de servicios) sin que las rutas tengan que
 // repetir try/catch.
@@ -38,6 +41,64 @@ import { registrarRutasDocumentacion } from './docs/documentacion.routes.js';
 import { crearLog } from './lib/log.js';
 
 const log = crearLog('docentes-service');
+
+// Metodos que el servicio atiende. GET lee; POST/PUT/DELETE escriben.
+const METODOS_PERMITIDOS = ['GET', 'POST', 'PUT', 'DELETE'];
+
+// Metodos cuyo manejador recibe cuerpo JSON.
+const METODOS_CON_CUERPO = ['POST', 'PUT'];
+
+// Tope del cuerpo en bytes (64 KB). Un docente con biografia larga y dos
+// listas cabe de sobra; un cuerpo mayor es un error o un abuso, no un docente.
+// Sin tope, un cliente podria mandar gigabytes y colgar el proceso acumulando
+// el string en memoria.
+const CUERPO_MAXIMO_BYTES = 64 * 1024;
+
+/**
+ * Lee el cuerpo JSON de la peticion, con tope de tamano.
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {Promise<*>} El JSON parseado, o undefined si el cuerpo venia vacio.
+ * @throws {{status: number, message: string}} 413 si excede el tope, 400 si el
+ *   JSON esta roto. Se tiran objetos planos (no Error) porque el llamador los
+ *   traduce directo a respuesta sin pasar por clasificarError.
+ */
+function leerCuerpo(req) {
+  return new Promise((resolve, reject) => {
+    const fragmentos = [];
+    let bytes = 0;
+    let excedido = false;
+
+    req.on('data', (trozo) => {
+      if (excedido) return;
+      bytes += trozo.length;
+      if (bytes > CUERPO_MAXIMO_BYTES) {
+        excedido = true;
+        reject({ status: 413, message: 'El cuerpo de la peticion es demasiado grande.' });
+        return;
+      }
+      fragmentos.push(trozo);
+    });
+
+    req.on('end', () => {
+      if (excedido) return;
+      const texto = Buffer.concat(fragmentos).toString('utf8').trim();
+      if (!texto) {
+        resolve(undefined);
+        return;
+      }
+      try {
+        resolve(JSON.parse(texto));
+      } catch {
+        reject({ status: 400, message: 'El cuerpo no es un JSON valido.' });
+      }
+    });
+
+    req.on('error', () => {
+      reject({ status: 400, message: 'No se pudo leer el cuerpo de la peticion.' });
+    });
+  });
+}
 
 /**
  * Crea el servidor HTTP completo.
@@ -73,13 +134,13 @@ export function createServer() {
       return;
     }
 
-    // ---- 2. Solo GET -------------------------------------------------------
-    if (metodo !== 'GET') {
-      res.setHeader('Allow', 'GET');
+    // ---- 2. Metodo permitido --------------------------------------------
+    if (!METODOS_PERMITIDOS.includes(metodo)) {
+      res.setHeader('Allow', METODOS_PERMITIDOS.join(', '));
       json(res, 405, {
-        error: `Metodo ${metodo} no permitido. Este servicio es de solo lectura.`,
+        error: `Metodo ${metodo} no permitido. Metodos admitidos: ${METODOS_PERMITIDOS.join(', ')}.`,
       });
-      log(`${metodo} ${ruta} -> 405 (solo se admite GET)`);
+      log(`${metodo} ${ruta} -> 405 (no admitido)`);
       return;
     }
 
@@ -91,13 +152,31 @@ export function createServer() {
       return;
     }
 
-    // ---- 4. Ejecutar el manejador ----------------------------------------
+    // ---- 4. Leer el cuerpo (solo POST/PUT) --------------------------------
+    // Los GET y DELETE llevan todo en la URL y nunca traen cuerpo util. Leerlo
+    // en esos verbos solo serviria para colgar la peticion esperando un 'end'
+    // que ya llego, asi que ni se intenta.
+    let cuerpo;
+    if (METODOS_CON_CUERPO.includes(metodo)) {
+      try {
+        cuerpo = await leerCuerpo(req);
+      } catch (fallo) {
+        const status = Number(fallo?.status) || 400;
+        json(res, status, { error: fallo?.message || 'Cuerpo de peticion invalido.' });
+        log(`${metodo} ${ruta} -> ${status} (cuerpo invalido)`);
+        return;
+      }
+    }
+
+    // ---- 5. Ejecutar el manejador ----------------------------------------
     // El contexto que recibe cada manejador es lo unico que necesita:
     //   - res:    para responder (lo tipico en un framework seria res.json)
     //   - query:  los QUERY PARAMS ya parseados
     //   - params: los PATH PARAMS que el router capturo
+    //   - body:   el JSON del cuerpo ya parseado (solo POST/PUT; undefined si
+    //             venia vacio)
     //   - req/url: por si algun manejador necesita la peticion completa
-    const ctx = { req, res, url, query: url.searchParams, params: encontrada.params };
+    const ctx = { req, res, url, query: url.searchParams, params: encontrada.params, body: cuerpo };
 
     try {
       await encontrada.manejador(ctx);

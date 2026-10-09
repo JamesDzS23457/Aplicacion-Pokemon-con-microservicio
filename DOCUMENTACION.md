@@ -150,10 +150,10 @@ de datos (`pg`), y es inevitable: Node no trae un cliente de PostgreSQL. El
 servidor HTTP, el enrutado, el CORS, el manejo de errores y la documentación
 OpenAPI están escritos a mano.
 
-**Solo path params y query params.** El servicio es de **solo lectura**: no
-tiene ni un verbo `POST`, `PUT`, `PATCH` o `DELETE`, y `src/server.js` no lee
-el cuerpo de las peticiones. La restricción se cumple por construcción, no por
-disciplina.
+**Lectura por URL, escritura con JSON.** Las consultas no llevan cuerpo: usan
+path params (`:id`, `:termino`) y query params (`?q=`, `?carrera=`). La escritura
+(`POST`, `PUT`, `DELETE`) recibe un JSON en el cuerpo, leido con tope de tamaño,
+y el gateway filtra sus campos con lista blanca.
 
 ## Scripts del backend
 
@@ -213,6 +213,9 @@ disciplina.
 | GET | `/api/docentes/facetas` | Valores disponibles de carrera y departamento, para los botones de filtro. |
 | GET | `/api/docentes/buscar/:termino` | Busca por nombre; el término va en el **path**. |
 | GET | `/api/docentes/:id` | Ficha de un docente; el id va en el **path**. |
+| POST | `/api/docentes` | Agrega un docente; body JSON con los datos (el `nombre` es obligatorio). Responde 201. |
+| PUT | `/api/docentes/:id` | Actualiza los campos que vengan en el body JSON; los demas quedan igual. |
+| DELETE | `/api/docentes/:id` | Borra un docente; no lleva cuerpo. |
 
 ## Documentación Swagger (requisito)
 

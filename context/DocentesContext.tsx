@@ -8,9 +8,10 @@
 // Sigue el mismo patron que PokemonContext y OnePieceContext (por eso los tres
 // se leen igual), con dos diferencias que son las del enunciado:
 //
-//   1. SOLO PETICIONES GET. No hay ningun POST en este archivo. Los filtros van
-//      como QUERY PARAMS (`?q=ana&carrera=...`) y la ficha de un docente se pide
-//      con un PATH PARAM (`/api/docentes/7`). Nunca hay un cuerpo que enviar.
+//   1. LECTURA CON GET Y ESCRITURA CON POST/PUT/DELETE. Los filtros van como
+//      QUERY PARAMS (`?q=ana&carrera=...`), la ficha se pide con un PATH PARAM
+//      (`/api/docentes/7`) y crear/actualizar mandan un JSON en el cuerpo.
+//      Borrar solo necesita el path param.
 //
 //   2. Un unico estado para la lista, no un resultado suelto. La pestana necesita
 //      el total, el numero de resultados de la pagina y los filtros aplicados,
@@ -74,6 +75,27 @@ export type Facetas = {
   departamento: string[];
 };
 
+/**
+ * Datos para crear o actualizar un docente.
+ *
+ * Son los campos escribibles y todos opcionales en el tipo porque al
+ * actualizar solo se mandan los que cambiaron; al crear, la pantalla exige el
+ * `nombre` antes de llamar. El `id` nunca se manda: lo asigna el servicio.
+ */
+export type DocenteInput = {
+  nombre?: string;
+  cargo?: string;
+  departamento?: string;
+  carrera?: string;
+  facultad?: string;
+  email?: string;
+  foto_url?: string;
+  resumen?: string;
+  biografia?: string;
+  areas?: string[];
+  formacion?: string[];
+};
+
 type DocentesContextValue = {
   /** Los docentes de la respuesta actual (ya filtrados). */
   docentes: Docente[];
@@ -95,6 +117,12 @@ type DocentesContextValue = {
   refrescar: () => Promise<void>;
   /** Pide UNA ficha por path param. Se usa en la pagina de detalle. */
   obtenerDocente: (id: number) => Promise<Docente | null>;
+  /** Crea un docente (POST). Devuelve la fila creada o null si fallo. */
+  crearDocente: (datos: DocenteInput) => Promise<Docente | null>;
+  /** Actualiza un docente (PUT). Devuelve la fila nueva o null si fallo. */
+  actualizarDocente: (id: number, datos: DocenteInput) => Promise<Docente | null>;
+  /** Borra un docente (DELETE). Devuelve true si se borro. */
+  eliminarDocente: (id: number) => Promise<boolean>;
   /** Recarga tambien las facetas. Se llama al arrancar la app. */
   cargarFacetas: () => Promise<void>;
 };
@@ -262,6 +290,159 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   }, []);
 
   /**
+   * Traduce el fallo de una escritura (POST/PUT/DELETE) a mensaje en pantalla.
+   *
+   * A diferencia del listado, aqui el fallo SI importa: el usuario acaba de
+   * pulsar "Guardar" y necesita saber si se guardo. Los 400/404/409 del
+   * servicio traen el motivo en `error` y se muestran tal cual; el arranque en
+   * frio se avisa como tal para que reintente en vez de corregir el formulario.
+   *
+   * @returns El mensaje del servicio, o null si fue arranque en frio (ya se
+   *   puso el aviso generico en ese caso).
+   */
+  const avisarFallo = (estado: number, detalle: unknown, accion: string): string | null => {
+    const mensajeError =
+      detalle && typeof detalle === 'object' && 'error' in detalle && typeof detalle.error === 'string'
+        ? detalle.error
+        : `No se pudo ${accion}.`;
+    log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
+    if (esArranqueFrio(estado, mensajeError)) {
+      setTono('info');
+      setMensaje(MENSAJE_ARRANQUE_FRIO);
+      return null;
+    }
+    setTono('error');
+    setMensaje(
+      estado === 0
+        ? 'No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.'
+        : mensajeError,
+    );
+    return mensajeError;
+  };
+
+  /**
+   * Crea un docente. Tras crearlo vuelve a pedir el listado y las facetas,
+   * para que la tarjeta nueva aparezca sin tener que recargar a mano.
+   */
+  const crearDocente = useCallback(
+    async (datos: DocenteInput): Promise<Docente | null> => {
+      log(`POST /api/docentes -> ${API_URL}`);
+      setCargando(true);
+      setMensaje('');
+      setTono('error');
+      let estado = 0;
+      try {
+        const response = await fetch(`${API_URL}/api/docentes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+          cache: 'no-store',
+          body: JSON.stringify(datos),
+        });
+        estado = response.status;
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          avisarFallo(estado, payload, 'guardar el docente');
+          return null;
+        }
+        await refrescar();
+        await cargarFacetas();
+        return payload as Docente;
+      } catch (error) {
+        const mensajeError = error instanceof Error ? error.message : 'No se pudo guardar el docente.';
+        log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
+        setTono('error');
+        setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
+        return null;
+      } finally {
+        setCargando(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtros],
+  );
+
+  /**
+   * Actualiza un docente. Igual que crear: al terminar refresca el listado
+   * para que la tarjeta muestre los datos nuevos.
+   */
+  const actualizarDocente = useCallback(
+    async (id: number, datos: DocenteInput): Promise<Docente | null> => {
+      log(`PUT /api/docentes/${id} -> ${API_URL}`);
+      setCargando(true);
+      setMensaje('');
+      setTono('error');
+      let estado = 0;
+      try {
+        const response = await fetch(`${API_URL}/api/docentes/${encodeURIComponent(String(id))}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+          cache: 'no-store',
+          body: JSON.stringify(datos),
+        });
+        estado = response.status;
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          avisarFallo(estado, payload, 'actualizar el docente');
+          return null;
+        }
+        await refrescar();
+        await cargarFacetas();
+        return payload as Docente;
+      } catch (error) {
+        const mensajeError = error instanceof Error ? error.message : 'No se pudo actualizar el docente.';
+        log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
+        setTono('error');
+        setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
+        return null;
+      } finally {
+        setCargando(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtros],
+  );
+
+  /**
+   * Borra un docente. Tras borrar refresca el listado para que la tarjeta
+   * desaparezca sin recargar a mano.
+   */
+  const eliminarDocente = useCallback(
+    async (id: number): Promise<boolean> => {
+      log(`DELETE /api/docentes/${id} -> ${API_URL}`);
+      setCargando(true);
+      setMensaje('');
+      setTono('error');
+      let estado = 0;
+      try {
+        const response = await fetch(`${API_URL}/api/docentes/${encodeURIComponent(String(id))}`, {
+          method: 'DELETE',
+          headers: { 'Cache-Control': 'no-cache' },
+          cache: 'no-store',
+        });
+        estado = response.status;
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          avisarFallo(estado, payload, 'borrar el docente');
+          return false;
+        }
+        await refrescar();
+        await cargarFacetas();
+        return true;
+      } catch (error) {
+        const mensajeError = error instanceof Error ? error.message : 'No se pudo borrar el docente.';
+        log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
+        setTono('error');
+        setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
+        return false;
+      } finally {
+        setCargando(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtros],
+  );
+
+  /**
    * Pide los valores disponibles para los filtros.
    *
    * Va aparte del listado y se carga una vez. Son 3 listas cortas (facultades,
@@ -334,6 +515,9 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         filtrar,
         refrescar,
         obtenerDocente,
+        crearDocente,
+        actualizarDocente,
+        eliminarDocente,
         cargarFacetas,
       }}
     >

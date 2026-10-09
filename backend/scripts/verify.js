@@ -280,13 +280,13 @@ await ensurePokemonsSchema();
 // haya apagado la base en algun momento.
 await ensureDocentesSchema();
 
-// Pokemon y One Piece siguen con 20. Docentes tiene UN registro: es el docente
-// real autorizado, en lugar de los 20 inventados que habia antes (ver
+// Pokemon y One Piece siguen con 20. Docentes tiene DOS registros: el docente
+// real autorizado y el segundo que se agrego despues (ver
 // backend/scripts/docentes-datos.js).
 console.log('== 1. Las bases de datos tienen los registros esperados ==');
 check('onepiece (MongoDB)', await mongoCountCharacters(), 20);
 check('pokemon (PostgreSQL)', await pokemonRepo.count(), 20);
-await checkAsync('docentes (PostgreSQL)', docentesRepo.count(), 1);
+await checkAsync('docentes (PostgreSQL)', docentesRepo.count(), 2);
 
 console.log('\n== 2. La busqueda es tolerante (sin llamar a la API externa) ==');
 check("buscar 'luffy' encuentra a Luffy", (await searchCharacters('luffy'))[0]?.name, 'Monkey D Luffy');
@@ -371,7 +371,27 @@ check('docentes: cabe un docente mas mientras haya sitio', limiteDocentesOk, tru
 // Y se limpia con remove(), para no dejar basura de prueba en la base real.
 const borrado = await docentesRepo.remove(999999);
 check('docentes: remove() borra lo que habia insertado', borrado?.id, 999999);
-await checkAsync('docentes: sigue habiendo 1', docentesRepo.count(), 1);
+await checkAsync('docentes: sigue habiendo 2', docentesRepo.count(), 2);
+
+// CRUD a nivel de repositorio (lo que usan las rutas POST/PUT/DELETE).
+// El ciclo HTTP completo se prueba con curl contra :4003 y :3000; aqui se
+// comprueba que insertar, actualizar parcial y borrar funcionan y que el PUT
+// parcial NO borra los campos que no se mandaron (regresion real que se vio al
+// implementar el CRUD: los ausentes se convertian en null).
+const creado = await docentesRepo.insert({
+  nombre: 'Docente De Prueba CRUD',
+  cargo: 'Profesor',
+  carrera: 'Ingenieria en Sistemas',
+  resumen: 'Resumen corto.',
+});
+check('docentes: insert() asigna id', typeof creado?.id === 'number' && creado.id > 0, true);
+const parcial = await docentesRepo.updateById(creado.id, { cargo: 'Decano' });
+check('docentes: update parcial cambia lo mandado', parcial?.cargo, 'Decano');
+check('docentes: update parcial conserva lo no mandado', parcial?.carrera, 'Ingenieria en Sistemas');
+check('docentes: update parcial conserva el resumen', parcial?.resumen, 'Resumen corto.');
+const borradoCrud = await docentesRepo.remove(creado.id);
+check('docentes: remove() del CRUD devuelve el id', borradoCrud?.id, creado.id);
+await checkAsync('docentes: tras el CRUD sigue habiendo 2', docentesRepo.count(), 2);
 
 console.log('\n== 5. Coherencia de datos ==');
 const sample = await mongoOne('Monkey D Luffy');
@@ -445,7 +465,7 @@ const listadoSinFiltros = await docentesRepo.findMany({
   limite: 50,
   offset: 0,
 });
-check('docentes: sin filtros devuelve todos', listadoSinFiltros.length, 1);
+check('docentes: sin filtros devuelve todos', listadoSinFiltros.length, 2);
 
 // El filtro de carrera se compara contra una columna YA NORMALIZADA. Antes se
 // comparaba el valor normalizado contra el texto crudo con `ILIKE`, que no

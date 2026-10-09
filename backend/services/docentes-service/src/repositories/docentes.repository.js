@@ -211,8 +211,11 @@ export async function findFacetas() {
 }
 
 // ---------------------------------------------------------------------------
-// ESCRITURA (solo la usa el seed)
+// ESCRITURA
 // ---------------------------------------------------------------------------
+// `upsert`/`clear` solo las usa el seed; `insert`/`updateById`/`remove` son las
+// que usan las rutas POST/PUT/DELETE del CRUD. Todo el SQL sigue viviendo solo
+// en este archivo.
 
 /**
  * Upsert idempotente: reejecutar el seed no duplica ni falla.
@@ -279,15 +282,130 @@ export async function clear() {
 }
 
 /**
+ * Siguiente id disponible (MAX(id)+1).
+ *
+ * La tabla usa `INTEGER PRIMARY KEY` sin secuencia porque el seed fija los ids
+ * a mano. Para las altas desde la app no se pide id: se calcula aqui. Con una
+ * sola app escribiendo a la vez no hay carrera que justifique una secuencia.
+ */
+export async function nextId() {
+  const row = await queryOne('SELECT COALESCE(MAX(id), 0) + 1 AS n FROM docentes');
+  return row.n;
+}
+
+/**
+ * Inserta UN docente nuevo y devuelve la fila creada.
+ *
+ * Las claves de busqueda se generan con las mismas funciones que usa el seed,
+ * y el trigger `docentes_search_keys` las recalcula de todos modos al
+ * insertar: quedan coherentes vengan de donde vengan. Si la tabla ya tiene 20
+ * filas, el trigger `docentes_max_20` aborta con excepcion y es la capa de
+ * servicios quien la traduce a 409.
+ */
+export async function insert(docente) {
+  const id = docente.id ?? (await nextId());
+  const row = await queryOne(
+    `INSERT INTO docentes (
+        id, nombre, search_key, cargo, departamento, carrera,
+        carrera_key, departamento_key, facultad, email,
+        foto_url, resumen, biografia, areas, formacion
+     ) VALUES (
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10,
+        $11, $12, $13, $14, $15
+     )
+     RETURNING ${COLUMNS}`,
+    [
+      id,
+      docente.nombre,
+      normalizeSearchKey(docente.nombre),
+      docente.cargo ?? null,
+      docente.departamento ?? null,
+      docente.carrera ?? null,
+      normalizeFilter(docente.carrera) || null,
+      normalizeFilter(docente.departamento) || null,
+      docente.facultad ?? null,
+      docente.email ?? null,
+      docente.foto_url ?? null,
+      docente.resumen ?? null,
+      docente.biografia ?? null,
+      JSON.stringify(docente.areas ?? []),
+      JSON.stringify(docente.formacion ?? []),
+    ],
+  );
+  return mapRow(row);
+}
+
+// Columnas que se pueden escribir desde la app. Es una lista blanca: lo que no
+// este aqui (id, search_key, *_key, created_at...) no se actualiza aunque venga
+// en el cuerpo, porque son calculadas o inmutables.
+const COLUMNAS_EDITABLES = [
+  'nombre',
+  'cargo',
+  'departamento',
+  'carrera',
+  'facultad',
+  'email',
+  'foto_url',
+  'resumen',
+  'biografia',
+  'areas',
+  'formacion',
+];
+
+/**
+ * Actualiza UN docente por id con los campos dados y devuelve la fila nueva.
+ *
+ * Solo toca las columnas de COLUMNAS_EDITABLES; las claves de busqueda se
+ * recalculan (aqui y en el trigger) cuando cambia el campo del que dependen.
+ * Devuelve null si no habia ningun docente con ese id.
+ */
+export async function updateById(id, cambios) {
+  const sets = [];
+  const params = [];
+
+  const fijar = (columna, valor) => {
+    params.push(valor);
+    sets.push(`${columna} = $${params.length}`);
+  };
+
+  for (const columna of COLUMNAS_EDITABLES) {
+    if (!(columna in cambios)) continue;
+    if (columna === 'areas' || columna === 'formacion') {
+      fijar(columna, JSON.stringify(cambios[columna] ?? []));
+    } else if (columna === 'nombre') {
+      fijar('nombre', cambios.nombre);
+      fijar('search_key', normalizeSearchKey(cambios.nombre));
+    } else if (columna === 'carrera') {
+      fijar('carrera', cambios.carrera);
+      fijar('carrera_key', normalizeFilter(cambios.carrera) || null);
+    } else if (columna === 'departamento') {
+      fijar('departamento', cambios.departamento);
+      fijar('departamento_key', normalizeFilter(cambios.departamento) || null);
+    } else {
+      fijar(columna, cambios[columna] ?? null);
+    }
+  }
+
+  if (sets.length === 0) return findById(id);
+
+  params.push(id);
+  const row = await queryOne(
+    `UPDATE docentes SET ${sets.join(', ')}, updated_at = NOW()
+      WHERE id = $${params.length}
+      RETURNING ${COLUMNS}`,
+    params,
+  );
+  return mapRow(row);
+}
+
+/**
  * Borra UN docente por id y devuelve el registro eliminado, o `null` si no habia
  * ninguno con ese id.
  *
- * NO es una ruta HTTP: el servicio de docentes es de solo lectura y no expone
- * ningun verbo distinto de GET. Esto es una funcion de MANTENIMIENTO, para
- * corregir la tabla a mano desde el Table Editor de Supabase sin abrir el panel.
- * Borrar desde el panel es igual de valido: el frontend se entera igual, porque
- * al volver a la pestana vuelve a pedir el listado (ver el useFocusEffect de
- * app/(tabs)/docentes.tsx).
+ * Es lo que usa la ruta DELETE del CRUD. Antes era solo una funcion de
+ * mantenimiento sin ruta; ahora el borrado desde la app pasa por aqui igual
+ * que el borrado a mano desde el Table Editor de Supabase.
  *
  * El trigger del limite de 20 va en BEFORE INSERT, asi que un DELETE lo esquiva
  * sin problema.

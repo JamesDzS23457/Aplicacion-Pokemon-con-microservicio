@@ -6,17 +6,17 @@
 // funciones puras de salida: escriben en el `res` y no saben nada del dominio.
 //
 // -----------------------------------------------------------------------------
-// POR QUE ESTE SERVICIO NO LEE EL CUERPO DE LAS PETICIONES
+// LECTURA DEL CUERPO: SOLO EN LAS RUTAS QUE ESCRIBEN
 // -----------------------------------------------------------------------------
-// El enunciado pide usar "path params o query params (no body params)". La
-// forma mas limpia de cumplirlo es NO LEER NUNCA el cuerpo: no hay ninguna ruta
-// que acepte POST, PUT, PATCH o DELETE, y el unico metodo que este servicio
-// atiende es GET, cuyo cuerpo siempre viene vacio.
+// Las rutas de LECTURA (GET) siguen sin leer nunca el cuerpo: sus parametros
+// viajan en path params y query params. Las rutas de ESCRITURA (POST/PUT/DELETE)
+// reciben un JSON en el cuerpo, que lee src/server.js con un tope de tamano
+// antes de llamar al manejador. Ver leerCuerpo() alli.
 //
-// En vez de caer en el mismo 404 que una ruta inexistente, cualquier otro metodo
-// recibe un 405 explicito con la cabecera `Allow: GET`, que es lo que manda el
-// protocolo. Asi el cliente puede distinguir "me equivoque de ruta" de "no se
-// admite este metodo".
+// En vez de caer en el mismo 404 que una ruta inexistente, un metodo no
+// soportado recibe un 405 explicito con la cabecera `Allow`, que es lo que
+// manda el protocolo. Asi el cliente puede distinguir "me equivoque de ruta" de
+// "no se admite este metodo".
 // ---------------------------------------------------------------------------
 
 /**
@@ -29,7 +29,7 @@
  */
 export function cabecerasCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 

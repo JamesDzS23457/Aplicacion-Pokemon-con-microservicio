@@ -27,10 +27,18 @@
 // ---------------------------------------------------------------------------
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { EmptyState, LoadingCard, Notice, Pill, SectionTitle } from '../../components/ui';
 import { BotonLeerMas, FotoDocente, EtiquetaDato, colorDeFacultad } from '../../components/docentes';
 import { useDocentes } from '../../context/DocentesContext';
@@ -39,7 +47,7 @@ import { colors, radius, shadows, spacing, type } from '../../lib/theme';
 
 export default function FichaDocenteScreen() {
   const router = useRouter();
-  const { obtenerDocente, docentes } = useDocentes();
+  const { obtenerDocente, eliminarDocente, docentes } = useDocentes();
   // `id` llega como string: expo-router lo entrega desde la ruta, no desde
   // Typescript. `Number` de "abc" da NaN, y eso se comprueba abajo.
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -49,6 +57,12 @@ export default function FichaDocenteScreen() {
   const [cargando, setCargando] = useState(true);
   const [mensaje, setMensaje] = useState('');
   const [tono, setTono] = useState<'error' | 'info'>('error');
+  const [borrando, setBorrando] = useState(false);
+  // Si true, el boton Eliminar pide confirmacion en la propia pantalla.
+  // No se usa Alert.alert: en react-native-web es un no-op (su implementacion
+  // es `static alert() {}`), asi que en la version web el boton no haria nada.
+  // La confirmacion en dos pasos funciona igual en movil y en web.
+  const [confirmando, setConfirmando] = useState(false);
 
   // El docente que la pestana ya tiene en memoria, para pintar sin parpadeo. Se
   // busca por id en vez de pasarlo por la ruta: es la misma informacion sin
@@ -82,13 +96,53 @@ export default function FichaDocenteScreen() {
     // se arranca en blanco hasta que llegue la respuesta, que es lo correcto.
     setDocente(enMemoria);
     scrollRef.current?.scrollTo({ y: 0, animated: false });
+    setConfirmando(false);
     void cargar();
     // `enMemoria` cambia de identidad en cada render; depender de el provocaria
     // un bucle. Solo interesa recargar al cambiar de docente (o sea, de id).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Al volver a la ficha (por ejemplo desde "editar" despues de guardar) se
+  // vuelve a pedir el dato, para mostrar los cambios sin recargar a mano. El
+  // primer foco no pide nada porque el efecto de arriba ya cargo al montar;
+  // sin ese ref habria dos peticiones identicas al abrir la ficha.
+  const cargarRef = useRef(cargar);
+  cargarRef.current = cargar;
+  const primerFocoFicha = useRef(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (primerFocoFicha.current) {
+        primerFocoFicha.current = false;
+        return;
+      }
+      void cargarRef.current();
+    }, []),
+  );
+
   const color = colorDeFacultad(docente?.facultad);
+
+  /**
+   * Borra el docente. Se llama solo desde el paso de confirmacion.
+   *
+   * Si se borra, se vuelve a la lista, que ya no trae la tarjeta porque el
+   * contexto refresca solo. Si falla, el Notice del contexto explica el motivo
+   * y se sigue en la ficha.
+   */
+  const borrar = useCallback(async () => {
+    if (!docente || borrando) return;
+    setBorrando(true);
+    const ok = await eliminarDocente(docente.id);
+    setBorrando(false);
+    // Si no hay a donde volver (enlace directo), se va a la lista en vez de
+    // quedarse en la ficha de un docente que ya no existe.
+    if (ok) {
+      setConfirmando(false);
+      if (router.canGoBack()) router.back();
+      else router.replace('/docentes');
+    }
+  }, [docente, borrando, eliminarDocente, router]);
 
   if (!docente && !cargando) {
     // Sin docente y sin estar cargando: o el id no existe (404) o la direccion
@@ -139,6 +193,72 @@ export default function FichaDocenteScreen() {
               {docente.facultad ? <Pill label={docente.facultad} color={color} /> : null}
             </View>
           </View>
+
+          {/* --- Acciones: editar y borrar --------------------------------- */}
+          {/* Borrar pide confirmacion en dos pasos dentro de la pantalla: el
+              primer toque arma la confirmacion y solo el segundo borra. */}
+          {!confirmando ? (
+            <View style={styles.acciones}>
+              <Pressable
+                onPress={() => router.push(`/docente/editar?id=${docente.id}`)}
+                accessibilityRole="button"
+                accessibilityLabel={`Editar a ${docente.nombre}`}
+                style={({ pressed }) => [styles.botonAccion, pressed && styles.botonPressed]}
+              >
+                <Ionicons name="pencil" size={16} color={colors.docentes} />
+                <Text style={[styles.botonAccionTexto, { color: colors.docentes }]}>Editar</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setConfirmando(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`Borrar a ${docente.nombre}`}
+                style={({ pressed }) => [
+                  styles.botonAccion,
+                  styles.botonBorrar,
+                  pressed && styles.botonPressed,
+                ]}
+              >
+                <Ionicons name="trash-outline" size={16} color={colors.danger} />
+                <Text style={[styles.botonAccionTexto, { color: colors.danger }]}>Eliminar</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.confirmarCaja}>
+              <Text style={styles.confirmarTexto}>
+                Se borrara "{docente.nombre}" de la base de datos. Esta accion no se puede deshacer.
+              </Text>
+              <View style={styles.acciones}>
+                <Pressable
+                  onPress={() => setConfirmando(false)}
+                  disabled={borrando}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancelar el borrado"
+                  style={({ pressed }) => [styles.botonAccion, pressed && styles.botonPressed]}
+                >
+                  <Text style={[styles.botonAccionTexto, { color: colors.textSoft }]}>
+                    Cancelar
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={borrar}
+                  disabled={borrando}
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirmar el borrado"
+                  style={({ pressed }) => [
+                    styles.botonConfirmar,
+                    pressed && !borrando && styles.botonPressed,
+                    borrando && styles.botonApagado,
+                  ]}
+                >
+                  {borrando ? (
+                    <ActivityIndicator size="small" color="#ffffff" />
+                  ) : (
+                    <Text style={styles.botonConfirmarTexto}>Confirmar borrado</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          )}
 
           <ScrollView
             ref={scrollRef}
@@ -334,6 +454,56 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   pillRowIzquierda: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+
+  // --- Acciones de la ficha (editar / eliminar) ------------------------------
+  acciones: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.md,
+  },
+  botonAccion: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  botonBorrar: { borderColor: `${colors.danger}55` },
+  botonPressed: { opacity: 0.85 },
+  botonApagado: { opacity: 0.6 },
+  botonAccionTexto: { fontSize: type.small + 2, fontWeight: '800' },
+  confirmarCaja: {
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.dangerSoft,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: `${colors.danger}55`,
+  },
+  confirmarTexto: {
+    color: colors.danger,
+    fontSize: type.small + 1,
+    fontWeight: '600',
+    lineHeight: 20,
+    marginBottom: spacing.sm,
+  },
+  botonConfirmar: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: colors.danger,
+    minHeight: 44,
+  },
+  botonConfirmarTexto: { color: '#ffffff', fontSize: type.small + 2, fontWeight: '800' },
 
   tarjetaDatos: {
     backgroundColor: colors.surface,

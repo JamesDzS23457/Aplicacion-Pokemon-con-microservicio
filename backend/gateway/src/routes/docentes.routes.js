@@ -5,21 +5,13 @@
 // sabe nada de docentes, solo reenvia y devuelve la respuesta tal cual.
 //
 // -----------------------------------------------------------------------------
-// POR QUE TODAS SON GET Y ADEMAS REENVIAN LA CADENA DE CONSULTA
+// LECTURA Y ESCRITURA
 // -----------------------------------------------------------------------------
-// El microservicio de docentes es de SOLO LECTURA y usa unicamente path params y
-// query params, nunca body params. El gateway no puede romper ese contrato por su
-// cuenta, asi que:
-//
-//   1. Solo declara GET. Ni siquiera existe un POST aqui que reenviar.
-//   2. Reconstruye la query string con URLSearchParams.
-//
-// El punto 2 es lo importante: no se reenvia lo que venga crudo. Se toma lo
-// recibido, se queda SOLO con los filtros que el microservicio entiende y se
-// vuelve a serializar. Asi el cliente no puede inyectar parametros que el
-// servicio no espera, y el microservicio recibe siempre la misma forma de
-// consulta. Los valores viajan dentro de la URL, que es donde fetch los mete
-// codificados, asi que un `q` con acentos o con un `&` llega intacto.
+// Las rutas GET leen y reenvian solo query params filtrados (ver
+// queryDeListado). Las rutas POST/PUT/DELETE escriben y reenvian un JSON en el
+// cuerpo, construido AQUI con lista blanca de campos: lo que el cliente mande
+// de mas (id, search_key, *_key, created_at...) se descarta y nunca llega al
+// microservicio, igual que los query params no aceptados no se reenvian.
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express';
@@ -31,6 +23,46 @@ const router = Router();
 // Filtros que el microservicio acepta en el listado. Es una lista blanca: lo que
 // no este aqui no se reenvia.
 const FILTROS_ACEPTADOS = ['q', 'carrera', 'departamento', 'limite', 'pagina'];
+
+// Campos que el microservicio acepta al crear o actualizar. Es la misma idea
+// que FILTROS_ACEPTADOS pero para el cuerpo: las columnas calculadas
+// (search_key, carrera_key, departamento_key) y los metadatos (id, created_at)
+// los pone el servicio, no el cliente.
+const CAMPOS_ESCRIBIBLES = [
+  'nombre',
+  'cargo',
+  'departamento',
+  'carrera',
+  'facultad',
+  'email',
+  'foto_url',
+  'resumen',
+  'biografia',
+  'areas',
+  'formacion',
+];
+
+/**
+ * Limpia el cuerpo de una peticion de escritura.
+ *
+ * Devuelve un objeto solo con los campos escribibles que venian definidos. Un
+ * cuerpo ausente o que no sea objeto da {}: es el microservicio quien responde
+ * 400 ("el cuerpo debe ser un objeto..." / "no hay campos..."), no el gateway,
+ * para que el mensaje de error sea el mismo se llame por donde se llame.
+ *
+ * @param {*} body req.body tal como lo dejo express.json().
+ * @returns {object} Cuerpo filtrado.
+ */
+function cuerpoDeEscritura(body) {
+  if (body === null || body === undefined || typeof body !== 'object' || Array.isArray(body)) {
+    return {};
+  }
+  const limpio = {};
+  for (const campo of CAMPOS_ESCRIBIBLES) {
+    if (body[campo] !== undefined) limpio[campo] = body[campo];
+  }
+  return limpio;
+}
 
 /**
  * Reconstruye la query string del listado a partir de lo que llego.
@@ -96,6 +128,43 @@ router.get('/buscar/:termino', async (req, res) => {
 /** GET /api/docentes/7 -> la ficha de un docente. */
 router.get('/:id', async (req, res) => {
   const result = await proxy(config.DOCENTES_SERVICE_URL, `/api/docentes/${req.params.id}`);
+  res.status(result.status).json(result.payload);
+});
+
+/**
+ * POST /api/docentes -> agrega un docente nuevo.
+ *
+ * El cuerpo viaja como JSON y se filtra con la lista blanca antes de
+ * reenviarse. Responde 201 con la fila creada (el proxy conserva el codigo del
+ * microservicio).
+ */
+router.post('/', async (req, res) => {
+  const result = await proxy(config.DOCENTES_SERVICE_URL, '/api/docentes', {
+    method: 'POST',
+    body: cuerpoDeEscritura(req.body),
+  });
+  res.status(result.status).json(result.payload);
+});
+
+/**
+ * PUT /api/docentes/7 -> actualiza los campos que vengan en el cuerpo.
+ *
+ * El id va en el path y los datos en el cuerpo, igual que en el
+ * microservicio. Los campos no escribibles se descartan aqui.
+ */
+router.put('/:id', async (req, res) => {
+  const result = await proxy(config.DOCENTES_SERVICE_URL, `/api/docentes/${req.params.id}`, {
+    method: 'PUT',
+    body: cuerpoDeEscritura(req.body),
+  });
+  res.status(result.status).json(result.payload);
+});
+
+/** DELETE /api/docentes/7 -> borra un docente. No lleva cuerpo. */
+router.delete('/:id', async (req, res) => {
+  const result = await proxy(config.DOCENTES_SERVICE_URL, `/api/docentes/${req.params.id}`, {
+    method: 'DELETE',
+  });
   res.status(result.status).json(result.payload);
 });
 

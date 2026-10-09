@@ -84,9 +84,9 @@ function coincidir(segmentos, patron) {
 /**
  * Crea un router vacio.
  *
- * @returns {{get: Function, find: Function, list: Function}}
- *   `get` registra rutas GET; `find` busca la ruta que corresponde a una
- *   peticion; `list` devuelve las rutas registradas (lo usa la pagina de
+ * @returns {{get: Function, post: Function, put: Function, delete: Function, find: Function, list: Function}}
+ *   `get/post/put/delete` registran rutas; `find` busca la ruta que corresponde
+ *   a una peticion; `list` devuelve las rutas registradas (lo usa la pagina de
  *   documentacion para no repetir la lista a mano).
  */
 export function createRouter() {
@@ -105,6 +105,15 @@ export function createRouter() {
   return {
     get(patron, manejador) {
       registrar('GET', patron, manejador);
+    },
+    post(patron, manejador) {
+      registrar('POST', patron, manejador);
+    },
+    put(patron, manejador) {
+      registrar('PUT', patron, manejador);
+    },
+    delete(patron, manejador) {
+      registrar('DELETE', patron, manejador);
     },
 
     /**

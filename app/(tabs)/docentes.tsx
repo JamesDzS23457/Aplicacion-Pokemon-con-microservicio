@@ -23,7 +23,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useRef, useState } from 'react';
-import { RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ChipFiltro, TarjetaDocente } from '../../components/docentes';
 import {
   EmptyState,
@@ -156,6 +156,22 @@ export default function DocentesScreen() {
             loading={cargando}
             label="Actualizar"
           />
+          {/* Alta de docentes (POST). Va al lado de Actualizar porque las dos
+              son acciones sobre la lista entera, no sobre una tarjeta: una
+              vuelve a pedir lo que hay y la otra agrega lo que falta. */}
+          <Pressable
+            onPress={() => router.push('/docente/nuevo')}
+            accessibilityRole="button"
+            accessibilityLabel="Agregar un docente nuevo"
+            style={({ pressed }) => [
+              styles.botonNuevo,
+              { backgroundColor: colors.docentes },
+              pressed && styles.botonNuevoPressed,
+            ]}
+          >
+            <MaterialCommunityIcons name="account-plus" size={16} color="#ffffff" />
+            <Text style={styles.botonNuevoTexto}>Nuevo</Text>
+          </Pressable>
         </View>
 
         {/* Fila de filtros por carrera. Solo aparece si el servicio devolvio
@@ -260,7 +276,17 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xxl,
   },
   // Margen bajo el campo de busqueda para el boton de refresco.
-  refreshRow: { marginTop: spacing.md, marginBottom: spacing.lg },
+  refreshRow: { marginTop: spacing.md, marginBottom: spacing.lg, flexDirection: 'row', gap: spacing.sm },
+  botonNuevo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+  },
+  botonNuevoPressed: { opacity: 0.85 },
+  botonNuevoTexto: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
   chips: { gap: spacing.xs, paddingRight: spacing.md },
   notaPie: {
     flexDirection: 'row',

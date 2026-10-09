@@ -14,12 +14,13 @@ enunciado:
 |---|---|---|---|
 | Pokémon | Node.js / Express | **Relacional**: PostgreSQL en Supabase | body (`POST /search`) |
 | One Piece | Python / FastAPI | **No relacional**: MongoDB en Atlas | body (`POST /search`) |
-| Docentes | Node.js **sin framework** | **Relacional**: PostgreSQL en Supabase | **path y query params** |
+| Docentes | Node.js **sin framework** | **Relacional**: PostgreSQL en Supabase | **lectura por URL, escritura con JSON** |
 
 El tercero es el que cumple los requisitos adicionales: está escrito sin ningún
-framework de HTTP (solo `node:http`, y su única dependencia es el driver `pg`) y
-es de **solo lectura**, así que todo entra por la URL y nunca por el cuerpo de la
-petición. Los tres publican su documentación **Swagger**.
+framework de HTTP (solo `node:http`, y su única dependencia es el driver `pg`).
+Las consultas entran por la URL (path y query params) y la escritura
+(`POST` crear, `PUT` actualizar, `DELETE` borrar) recibe JSON en el cuerpo. Los
+tres publican su documentación **Swagger**.
 
 ## Arquitectura
 
