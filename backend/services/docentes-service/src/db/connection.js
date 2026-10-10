@@ -57,11 +57,11 @@ if (typeof process.loadEnvFile === 'function') {
 const CONNECTION_STRING =
   process.env.DOCENTES_DATABASE_URL || process.env.DATABASE_URL;
 
-if (!CONNECTION_STRING) {
-  throw new Error(
-    'Falta DOCENTES_DATABASE_URL (o DATABASE_URL) en el entorno.',
-  );
-}
+// Si falta la URI NO se revienta al importar. Mismo criterio que
+// onepiece-service: antes moria antes de escuchar y Render pedia Manual Deploy.
+export const ERROR_CONFIGURACION = CONNECTION_STRING
+  ? null
+  : 'Falta DOCENTES_DATABASE_URL (o DATABASE_URL) en el entorno. Revisa Environment > tu servicio en Render.';
 
 // Host de la base de datos, SIN usuario ni contrasena, solo para los logs de
 // arranque. new URL() entiende "postgresql://..." y separa el host, asi que lo
@@ -70,6 +70,7 @@ if (!CONNECTION_STRING) {
 // Sirve para responder de un vistazo a "contra que base estoy hablando":
 // "localhost" = Postgres local; "aws-0-<region>.pooler.supabase.com" = Supabase.
 export const DB_HOST = (() => {
+  if (!CONNECTION_STRING) return 'sin-configurar';
   try {
     return new URL(CONNECTION_STRING).hostname;
   } catch {
@@ -81,15 +82,18 @@ export const DB_HOST = (() => {
 // (Docker) que no lo tenga; no hay que tocar nada mas.
 const useSsl = process.env.DATABASE_SSL !== 'false';
 
-export const POOL = new pg.Pool({
-  connectionString: CONNECTION_STRING,
-  ssl: useSsl ? { rejectUnauthorized: false } : false,
-  max: 10,
-  idleTimeoutMillis: 30_000,
-});
+export const POOL = CONNECTION_STRING
+  ? new pg.Pool({
+      connectionString: CONNECTION_STRING,
+      ssl: useSsl ? { rejectUnauthorized: false } : false,
+      max: 10,
+      idleTimeoutMillis: 30_000,
+    })
+  : null;
 
 /** Ejecuta una consulta y devuelve las filas. */
 export async function query(text, params = []) {
+  if (!POOL) throw Object.assign(new Error(ERROR_CONFIGURACION), { status: 503 });
   const result = await POOL.query(text, params);
   return result.rows;
 }
@@ -108,11 +112,12 @@ export async function queryOne(text, params = []) {
  * la primera peticion, que es mucho mas dificil de diagnosticar.
  */
 export async function ensureSchema() {
+  if (!POOL) throw Object.assign(new Error(ERROR_CONFIGURACION), { status: 503 });
   const sql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await POOL.query(sql);
 }
 
 /** Cierra el pool. Sin esto el proceso se queda vivo esperando conexiones. */
 export async function closePool() {
-  await POOL.end();
+  if (POOL) await POOL.end();
 }

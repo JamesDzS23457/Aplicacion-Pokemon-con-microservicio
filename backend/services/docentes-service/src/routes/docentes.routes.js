@@ -53,9 +53,9 @@ export function registrarRutas(router) {
         docentes: total,
       });
     } catch (error) {
-      // Si la base no responde el servicio esta vivo pero NO sirve: es un 500,
-      // no un 503 generico, y el cuerpo lo dice explicitamente.
-      json(ctx.res, 500, {
+      // 200 a proposito: `healthCheckPath: /health` de Render reinicia la
+      // instancia ante un no-200 y el servicio quedaria en bucle inalcanzable.
+      json(ctx.res, 200, {
         status: 'error',
         service: 'docentes-service',
         error: 'La base de datos no responde',

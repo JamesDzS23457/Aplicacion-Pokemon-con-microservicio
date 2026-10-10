@@ -26,16 +26,25 @@
 // ---------------------------------------------------------------------------
 
 import { createServer } from './server.js';
-import { ensureSchema, closePool, DB_HOST } from './db/connection.js';
+import { ensureSchema, closePool, DB_HOST, ERROR_CONFIGURACION } from './db/connection.js';
 import { crearLog, ENTORNO } from './lib/log.js';
 
 const log = crearLog('docentes-service');
 const PORT = process.env.PORT || 4003;
 
-try {
-  await ensureSchema();
+if (ERROR_CONFIGURACION) {
+  log(`ARRANQUE DEGRADADO: ${ERROR_CONFIGURACION}`);
+} else {
+  try {
+    await ensureSchema();
+  } catch (error) {
+    // No se muere el proceso: Supabase a veces da ETIMEDOUT en el primer
+    // intento. Morir aqui = deploy fallido en Render = Manual Deploy.
+    log(`AVISO: la base no responde todavia: ${error.message}`);
+  }
+}
 
-  const server = createServer();
+const server = createServer();
 
   // Cierra el pool al apagar el proceso, para no cortar conexiones de golpe.
   // En Render el SIGTERM llega cuando el servicio se suspende o se reinicia.
@@ -56,8 +65,3 @@ try {
     log(`ENTORNO=${ENTORNO} | BD=${DB_HOST} | escuchando en :${PORT}`);
     log('documentacion en /docs  |  contrato en /openapi.json');
   });
-} catch (error) {
-  log(`no se pudo iniciar: ${error.message}`);
-  log('Revisa DOCENTES_DATABASE_URL en tu .env');
-  process.exit(1);
-}

@@ -20,6 +20,7 @@ services:
     name: pokemon-service
     runtime: node
     plan: free
+    autoDeploy: true
     rootDir: backend/services/pokemon-service
     buildCommand: npm install
     startCommand: node src/index.js
@@ -58,6 +59,7 @@ services:
     name: onepiece-service
     runtime: python
     plan: free
+    autoDeploy: true
     rootDir: backend/services/onepiece-service
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
@@ -93,6 +95,7 @@ services:
     name: docentes-service
     runtime: node
     plan: free
+    autoDeploy: true
     rootDir: backend/services/docentes-service
     buildCommand: npm install
     startCommand: node src/index.js
@@ -113,6 +116,7 @@ services:
     name: gateway
     runtime: node
     plan: free
+    autoDeploy: true
     rootDir: backend/gateway
     buildCommand: npm install
     startCommand: node src/index.js

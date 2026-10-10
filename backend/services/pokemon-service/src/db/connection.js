@@ -52,11 +52,16 @@ if (typeof process.loadEnvFile === 'function') {
 const CONNECTION_STRING =
   process.env.POKEMON_DATABASE_URL || process.env.DATABASE_URL;
 
-if (!CONNECTION_STRING) {
-  throw new Error(
-    'Falta POKEMON_DATABASE_URL (o DATABASE_URL) en el entorno.',
-  );
-}
+// Si falta la URI NO se revienta al importar. Mismo criterio que
+// onepiece-service: antes este modulo hacia `throw` aqui y el proceso moria
+// ANTES de escuchar, Render marcaba el deploy como fallido en bucle y la unica
+// salida era un `Manual Deploy`. Ahora el servicio arranca en modo degradado,
+// `/health` responde 200 con `status: error` y el motivo, y las rutas de datos
+// devuelven ese mismo motivo. El fallo cambia de superficie (log + HTTP) pero
+// no se pierde: `query()` lo lanza cuando se usa.
+export const ERROR_CONFIGURACION = CONNECTION_STRING
+  ? null
+  : 'Falta POKEMON_DATABASE_URL (o DATABASE_URL) en el entorno. Revisa Environment > tu servicio en Render.'
 
 // Host de la base de datos, SIN usuario ni contrasena, solo para los logs de
 // arranque. new URL() entiende "postgresql://..." y separa el host, asi que
@@ -65,6 +70,7 @@ if (!CONNECTION_STRING) {
 // Sirve para responder de un vistazo a "contra que base estoy hablando":
 // "localhost" = Postgres local; "aws-0-<region>.pooler.supabase.com" = Supabase.
 export const DB_HOST = (() => {
+  if (!CONNECTION_STRING) return 'sin-configurar';
   try {
     return new URL(CONNECTION_STRING).hostname;
   } catch {
@@ -77,14 +83,17 @@ export const DB_HOST = (() => {
 // DATABASE_SSL=false se conecta a un Postgres local que no lo tenga.
 const useSsl = process.env.DATABASE_SSL !== 'false';
 
-export const POOL = new pg.Pool({
-  connectionString: CONNECTION_STRING,
-  ssl: useSsl ? { rejectUnauthorized: false } : false,
-  max: 10,
-  idleTimeoutMillis: 30_000,
-});
+export const POOL = CONNECTION_STRING
+  ? new pg.Pool({
+      connectionString: CONNECTION_STRING,
+      ssl: useSsl ? { rejectUnauthorized: false } : false,
+      max: 10,
+      idleTimeoutMillis: 30_000,
+    })
+  : null;
 
 export async function query(text, params = []) {
+  if (!POOL) throw Object.assign(new Error(ERROR_CONFIGURACION), { status: 503 });
   const result = await POOL.query(text, params);
   return result.rows;
 }
@@ -96,10 +105,11 @@ export async function queryOne(text, params = []) {
 
 /** Crea las tablas si no existen. Idempotente. */
 export async function ensureSchema() {
+  if (!POOL) throw Object.assign(new Error(ERROR_CONFIGURACION), { status: 503 });
   const sql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await POOL.query(sql);
 }
 
 export async function closePool() {
-  await POOL.end();
+  if (POOL) await POOL.end();
 }

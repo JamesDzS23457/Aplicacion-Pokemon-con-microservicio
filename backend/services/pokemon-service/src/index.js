@@ -14,7 +14,7 @@ import express from 'express';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import pokemonRoutes from './routes/pokemon.routes.js';
-import { ensureSchema, DB_HOST } from './db/connection.js';
+import { ensureSchema, DB_HOST, ERROR_CONFIGURACION } from './db/connection.js';
 import * as repo from './repositories/pokemon.repository.js';
 import { crearLog, ENTORNO } from './lib/log.js';
 import { swaggerSpec } from './swagger.js';
@@ -46,12 +46,19 @@ app.use(express.json({ limit: '10kb' }));
  *       500:
  *         description: La base de datos no responde.
  */
-app.get('/health', async (_req, res, next) => {
+app.get('/health', async (_req, res) => {
+  if (ERROR_CONFIGURACION) {
+    return res.json({ status: 'error', service: 'pokemon-service', error: ERROR_CONFIGURACION });
+  }
   try {
     const total = await repo.count();
     res.json({ status: 'ok', service: 'pokemon-service', pokemons: total });
   } catch (error) {
-    next(error);
+    // 200 a proposito: `healthCheckPath: /health` de Render reinicia la
+    // instancia ante un no-200 y el servicio quedaria en bucle inalcanzable.
+    // El codigo HTTP dice "el proceso vive", el estado de la base va dentro.
+    log(`health: ${error.message}`);
+    res.json({ status: 'error', service: 'pokemon-service', error: 'La base de datos no responde' });
   }
 });
 
@@ -79,18 +86,24 @@ app.use((err, _req, res, _next) => {
 
 const PORT = process.env.PORT || 4001;
 
-try {
-  await ensureSchema();
-  app.listen(PORT, '0.0.0.0', () => {
-    // Deja claro, desde el arranque, en que entorno corre y contra que base
-    // de datos habla. Es la primera cosa que se mira si una busqueda "no
-    // encuentra nada": si ENTORNO=LOCAL, estas consultando tu Postgres local,
-    // no Supabase.
-    log(`ENTORNO=${ENTORNO} | BD=${DB_HOST} | escuchando en :${PORT}`);
-    log(`documentacion en http://localhost:${PORT}/docs`);
-  });
-} catch (error) {
-  log(`no se pudo iniciar: ${error.message}`);
-  log('Revisa POKEMON_DATABASE_URL en tu .env');
-  process.exit(1);
+if (ERROR_CONFIGURACION) {
+  log(`ARRANQUE DEGRADADO: ${ERROR_CONFIGURACION}`);
+} else {
+  try {
+    await ensureSchema();
+  } catch (error) {
+    // No se muere el proceso: Supabase a veces da ETIMEDOUT en el primer
+    // intento al pooler. Morir aqui = deploy fallido en Render = Manual Deploy.
+    // Se arranca degradado y /health lo dice con status:error.
+    log(`AVISO: la base no responde todavia: ${error.message}`);
+  }
 }
+
+app.listen(PORT, '0.0.0.0', () => {
+  // Deja claro, desde el arranque, en que entorno corre y contra que base
+  // de datos habla. Es la primera cosa que se mira si una busqueda "no
+  // encuentra nada": si ENTORNO=LOCAL, estas consultando tu Postgres local,
+  // no Supabase.
+  log(`ENTORNO=${ENTORNO} | BD=${DB_HOST} | escuchando en :${PORT}`);
+  log(`documentacion en http://localhost:${PORT}/docs`);
+});
