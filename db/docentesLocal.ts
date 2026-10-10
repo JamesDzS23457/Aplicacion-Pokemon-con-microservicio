@@ -100,6 +100,15 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
   return db;
 }
 
+/** Valida el email con la MISMA regla que el servicio (fail fast: mejor avisar
+ * al guardar que perder el dato en la sincronizacion). */
+function validarEmailLocal(email: string | null | undefined): void {
+  if (email === null || email === undefined) return;
+  if (!/\S+@\S+\.\S+/.test(email)) {
+    throw new Error('El email no tiene un formato valido.');
+  }
+}
+
 /** Convierte "" en null (igual que textoOpcional del servicio) y deja undefined intacto. */
 function nuloSiVacio(valor: string | null | undefined): string | null | undefined {
   if (valor === undefined) return undefined;
@@ -287,11 +296,18 @@ export async function obtenerLocal(id: number): Promise<DocenteLocal | null> {
 // ESCRITURA LOCAL + OUTBOX
 // ---------------------------------------------------------------------------
 
-/** Genera un id local negativo temporal. */
+/**
+ * Genera un id local temporal, siempre NEGATIVO.
+ *
+ * Se usa `min(MIN(id), 0) - 1` y no `MIN(id) - 1`: con ids de nube 1..20 el
+ * minimo es 1 y `1 - 1` daria 0, que no es negativo y romperia las
+ * comprobaciones `id < 0` de la sincronizacion (temporal vs. real).
+ * `min()` con dos argumentos es la funcion escalar de SQLite (no el agregado).
+ */
 async function siguienteIdLocal(): Promise<number> {
   const database = await getDb();
   const row = await database.getFirstAsync<{ n: number }>(
-    'SELECT COALESCE(MIN(id), 0) - 1 AS n FROM docentes_local'
+    'SELECT min(COALESCE(MIN(id), 0), 0) - 1 AS n FROM docentes_local'
   );
   return row?.n ?? -1;
 }
@@ -312,6 +328,7 @@ export async function crearLocal(docente: Omit<DocenteLocal, 'id' | 'search_key'
   if (!nombre) {
     throw new Error('El nombre del docente es obligatorio.');
   }
+  validarEmailLocal(nuloSiVacio(docente.email) ?? null);
   const search_key = normalizeSearchKey(nombre);
   const carrera_key = normalizeFilter(docente.carrera) || null;
   const departamento_key = normalizeFilter(docente.departamento) || null;
@@ -388,7 +405,11 @@ export async function actualizarLocal(
     fijar('carrera_key', normalizeFilter(cambios.carrera) || null);
   }
   if (cambios.facultad !== undefined) fijar('facultad', nuloSiVacio(cambios.facultad) ?? null);
-  if (cambios.email !== undefined) fijar('email', nuloSiVacio(cambios.email) ?? null);
+  if (cambios.email !== undefined) {
+    const email = nuloSiVacio(cambios.email) ?? null;
+    validarEmailLocal(email);
+    fijar('email', email);
+  }
   if (cambios.foto_url !== undefined) fijar('foto_url', nuloSiVacio(cambios.foto_url) ?? null);
   if (cambios.resumen !== undefined) fijar('resumen', nuloSiVacio(cambios.resumen) ?? null);
   if (cambios.biografia !== undefined) fijar('biografia', nuloSiVacio(cambios.biografia) ?? null);
@@ -483,6 +504,31 @@ export async function reescribirIdLocal(id_local: number, id_real: number): Prom
       [id_real, id_local],
     );
   });
+}
+
+/** ¿Ya existe un docente visible con ese nombre? (deteccion temprana de duplicados:
+ * la columna `nombre` es UNIQUE en la nube y un duplicado seria 409 en el sync).
+ * Compara el nombre EXACTO (recortado), igual que el UNIQUE, e ignora los
+ * marcados para borrar (esos ya no cuentan). */
+export async function existeNombreLocal(nombre: string, excluirId?: number): Promise<boolean> {
+  const database = await getDb();
+  const limpio = (nombre ?? '').trim();
+  if (!limpio) return false;
+  const fila = await database.getFirstAsync<{ n: number }>(
+    `SELECT 1 AS n FROM docentes_local
+      WHERE nombre = ?
+        AND (accion IS NULL OR accion != 'borrar')
+        AND (? IS NULL OR id != ?)
+      LIMIT 1`,
+    [limpio, excluirId ?? null, excluirId ?? null],
+  );
+  return !!fila;
+}
+
+/** Elimina una fila local SIN encolar (solo limpieza interna, no es un borrado de usuario). */
+export async function eliminarFilaLocal(id: number): Promise<void> {
+  const database = await getDb();
+  await database.runAsync('DELETE FROM docentes_local WHERE id = ?', [id]);
 }
 
 /** Marca un registro local como sincronizado (tras actualizar/borrar). */

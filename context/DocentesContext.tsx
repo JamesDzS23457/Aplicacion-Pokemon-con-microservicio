@@ -495,6 +495,14 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         // y el dato no se ha guardado en ningun sitio.
         if (estado === 0) {
           try {
+            // Deteccion temprana de duplicados: `nombre` es UNIQUE en la nube
+            // y un duplicado seria 409 en el sync (se descartaria y el dato se
+            // perderia). Mejor avisar aqui, con la fila original a la vista.
+            if (datos.nombre && (await localDb.existeNombreLocal(datos.nombre))) {
+              setTono('error');
+              setMensaje('Ya existe un docente con ese nombre en este dispositivo.');
+              return null;
+            }
             const idLocal = await localDb.crearLocal({
               nombre: datos.nombre ?? '',
               cargo: datos.cargo,
@@ -566,6 +574,18 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         const mensajeError = error instanceof Error ? error.message : 'No se pudo actualizar el docente.';
         if (estado === 0) {
           try {
+            // Si cambia el nombre, se comprueba duplicado (excluyendose a si
+            // mismo): evita encolar una operacion que la nube rechazaria.
+            if (datos.nombre !== undefined && datos.nombre.trim() !== '') {
+              const filaPropia = await localDb.obtenerLocal(id);
+              const nombreNuevo = datos.nombre.trim();
+              if ((!filaPropia || filaPropia.nombre !== nombreNuevo) &&
+                  (await localDb.existeNombreLocal(nombreNuevo, id))) {
+                setTono('error');
+                setMensaje('Ya existe otro docente con ese nombre en este dispositivo.');
+                return null;
+              }
+            }
             await localDb.actualizarLocal(id, {
               nombre: datos.nombre,
               cargo: datos.cargo,
@@ -742,7 +762,17 @@ export function DocentesProvider({ children }: PropsWithChildren) {
     // Mapea ids temporales negativos a los ids reales que asigna el servidor.
     const mapaIds = new Map<number, number>();
     let subidas = 0;
-    let descartadas = 0;
+    // Motivos especificos de descarte ("Nombre: motivo"), para que el usuario
+    // sepa POR QUE la nube rechazo cada cambio en vez de ver solo un conteo.
+    const descartes: string[] = [];
+    const nombreDe = (payload: unknown): string => {
+      if (payload && typeof payload === 'object' && 'nombre' in payload &&
+          typeof (payload as { nombre: unknown }).nombre === 'string' &&
+          ((payload as { nombre: string }).nombre.trim() !== '')) {
+        return (payload as { nombre: string }).nombre.trim();
+      }
+      return '';
+    };
 
     const resolverId = (idLocal: number) => mapaIds.get(idLocal) ?? idLocal;
 
@@ -762,18 +792,18 @@ export function DocentesProvider({ children }: PropsWithChildren) {
           if (!response.ok) {
             if (response.status === 409 || response.status === 400) {
               // La nube lo rechaza (limite o duplicado): se descarta de la
-              // cola y se borra el temporal local para no reintentarlo siempre.
+              // cola y se elimina la fila temporal para no reintentarla
+              // siempre. Se usa eliminarFilaLocal (sin encolar) y no
+              // borrarLocal: borrarLocal meteria OTRA operacion en la cola.
               await localDb.eliminarDeCola(op.orden);
-              try {
-                const database_fallo = op.id_local;
-                // Marca el temporal como borrado para que no reaparezca.
-                await localDb.borrarLocal(database_fallo);
-                await localDb.eliminarDeCola(op.orden).catch(() => {});
-              } catch {
-                // si ya no existe, no pasa nada
-              }
-              descartadas += 1;
-              log(`  SYNC crear orden ${op.orden}: descartada (${payload?.error ?? response.status})`);
+              await localDb.eliminarFilaLocal(op.id_local).catch(() => {});
+              const motivo = (payload && typeof payload === 'object' && 'error' in payload &&
+                typeof (payload as { error: unknown }).error === 'string')
+                ? (payload as { error: string }).error
+                : `Error ${response.status}`;
+              const etiqueta = nombreDe(op.payload);
+              descartes.push(etiqueta ? `"${etiqueta}": ${motivo}` : motivo);
+              log(`  SYNC crear orden ${op.orden}: descartada (${motivo})`);
               continue;
             }
             throw new Error(payload?.error || `Error ${response.status} al subir la creacion`);
@@ -789,7 +819,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
             // Su `crear` aun no subio (no deberia pasar en FIFO, pero si la
             // creacion se descarto, el actualizar queda huerfano).
             await localDb.eliminarDeCola(op.orden);
-            descartadas += 1;
+            descartes.push('Cambio sobre un docente que la nube rechazo');
             log(`  SYNC actualizar orden ${op.orden}: huerfana (crear descartada), se elimina`);
             continue;
           }
@@ -804,8 +834,12 @@ export function DocentesProvider({ children }: PropsWithChildren) {
             if (response.status === 404 || response.status === 409 || response.status === 400) {
               await localDb.eliminarDeCola(op.orden);
               await localDb.marcarSincronizado(idReal).catch(() => {});
-              descartadas += 1;
-              log(`  SYNC actualizar orden ${op.orden}: descartada (${payload?.error ?? response.status})`);
+              const motivo = (payload && typeof payload === 'object' && 'error' in payload &&
+                typeof (payload as { error: unknown }).error === 'string')
+                ? (payload as { error: string }).error
+                : `Error ${response.status}`;
+              descartes.push(`Cambio al docente ${idReal}: ${motivo}`);
+              log(`  SYNC actualizar orden ${op.orden}: descartada (${motivo})`);
               continue;
             }
             throw new Error(payload?.error || `Error ${response.status} al subir la actualizacion`);
@@ -855,13 +889,13 @@ export function DocentesProvider({ children }: PropsWithChildren) {
     }
     const restantes = await localDb.contarPendientes().catch(() => 0);
     if (restantes === 0) {
-      setTono('info');
+      setTono(descartes.length > 0 ? 'error' : 'info');
       setMensaje(
-        descartadas > 0
-          ? `Sincronizado: ${subidas} cambios subidos, ${descartadas} descartados por la nube (limite o duplicado).`
+        descartes.length > 0
+          ? `Sincronizado: ${subidas} cambios subidos. No se pudo subir: ${descartes.join('; ')}.`
           : `Sincronizado: ${subidas} cambios subidos a la nube.`,
       );
-      log(`SYNC completa: ${subidas} subidas, ${descartadas} descartadas`);
+      log(`SYNC completa: ${subidas} subidas, ${descartes.length} descartadas (${descartes.join('; ')})`);
     } else {
       setTono('info');
       setMensaje(`Sincronizacion parcial: quedan ${restantes} cambios pendientes.`);
