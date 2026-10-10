@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// CONTEXTO DE DOCENTES
+// CONTEXTO DE DOCENTES (con respaldo offline SQLite)
 //
 // Es el tercer contexto de la app y el unico que trabaja con una LISTA en vez
 // de con un unico resultado: Pokemon y One Piece muestran una ficha cada uno,
@@ -17,13 +17,28 @@
 //      el total, el numero de resultados de la pagina y los filtros aplicados,
 //      asi que se guarda la respuesta completa tal cual llega del gateway.
 //
+// MODO OFFLINE (Actividad en Clase 13):
+//   - Con red: todo va al gateway y el resultado se guarda como espejo en
+//     SQLite local (db/docentesLocal.ts).
+//   - Sin red (fetch sin respuesta HTTP, estado 0): lectura y escritura van
+//     contra SQLite. Las escrituras se encolan en la tabla `cola` (outbox).
+//   - Al volver la red: `sincronizar()` sube la cola en orden FIFO y luego
+//     recarga desde la nube.
+//
 // Regla del proyecto que este archivo respeta: la app NUNCA llama a un
-// microservicio ni a la base de datos. Solo al gateway (API_URL), igual que las
-// otras dos pestanas.
+// microservicio ni a la base de datos en la nube. Solo al gateway (API_URL),
+// igual que las otras dos pestanas. SQLite es una BD del DISPOSITIVO, no de
+// la nube, asi que no rompe esa regla.
+//
+// DISTINCION CRITICA: un 503 NO es "sin conexion". 503 = arranque en frio de
+// Render (hay red, el servicio despierta). Solo estado 0 (sin respuesta HTTP)
+// activa el modo offline.
 // ---------------------------------------------------------------------------
 
-import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { API_URL, log, esArranqueFrio, MENSAJE_ARRANQUE_FRIO } from '../lib/api';
+import { useConexion, initConexion } from '../lib/conexion';
+import * as localDb from '../db/docentesLocal';
 
 /**
  * Un docente tal cual lo devuelve el microservicio.
@@ -107,24 +122,32 @@ type DocentesContextValue = {
   facetas: Facetas;
   cargando: boolean;
   mensaje: string;
-  /** 'info' para el aviso de arranque en frio; 'error' para fallos reales. */
+  /** 'info' para avisos (arranque en frio, modo offline); 'error' para fallos. */
   tono: 'error' | 'info';
   /** Si true, ya se hizo al menos una peticion y la lista esta vacia de verdad. */
   vacio: boolean;
+  /** true = hay red (o aun no se sabe); false = modo offline. */
+  enLinea: boolean;
+  /** Operaciones pendientes de sincronizar (cola outbox). */
+  pendientes: number;
+  /** true mientras se esta sincronizando la cola. */
+  sincronizando: boolean;
   /** Aplica filtros (query params) y vuelve a pedir el listado. */
   filtrar: (filtros: Partial<FiltrosDocentes>) => Promise<void>;
   /** Vuelve a pedir el listado con los filtros actuales. */
   refrescar: () => Promise<void>;
   /** Pide UNA ficha por path param. Se usa en la pagina de detalle. */
   obtenerDocente: (id: number) => Promise<Docente | null>;
-  /** Crea un docente (POST). Devuelve la fila creada o null si fallo. */
+  /** Crea un docente (POST con red, SQLite + cola sin red). */
   crearDocente: (datos: DocenteInput) => Promise<Docente | null>;
-  /** Actualiza un docente (PUT). Devuelve la fila nueva o null si fallo. */
+  /** Actualiza un docente (PUT con red, SQLite + cola sin red). */
   actualizarDocente: (id: number, datos: DocenteInput) => Promise<Docente | null>;
-  /** Borra un docente (DELETE). Devuelve true si se borro. */
+  /** Borra un docente (DELETE con red, SQLite + cola sin red). */
   eliminarDocente: (id: number) => Promise<boolean>;
   /** Recarga tambien las facetas. Se llama al arrancar la app. */
   cargarFacetas: () => Promise<void>;
+  /** Sube la cola pendiente y recarga desde la nube. */
+  sincronizar: () => Promise<void>;
 };
 
 /** Filtros vacios. Se usan como punto de partida y como referencia de igualdad. */
@@ -132,6 +155,11 @@ const FILTROS_VACIOS: FiltrosDocentes = { q: '', carrera: '', departamento: '' }
 
 /** Facetas vacias, para no tener `null` en el estado inicial. */
 const FACETAS_VACIAS: Facetas = { facultad: [], carrera: [], departamento: [] };
+
+/** Aviso que se muestra cuando se esta trabajando contra la copia local. */
+const MENSAJE_OFFLINE =
+  'Sin conexion: mostrando datos guardados en el dispositivo. ' +
+  'Puedes consultar, crear, editar y borrar; se sincronizaran al volver la red.';
 
 const DocentesContext = createContext<DocentesContextValue | undefined>(undefined);
 
@@ -158,6 +186,24 @@ function queryDeListado(filtros: FiltrosDocentes): string {
   return cadena ? `?${cadena}` : '';
 }
 
+/** Convierte una fila local (SQLite) al tipo Docente que usa la UI. */
+function localADocente(fila: localDb.DocenteLocal): Docente {
+  return {
+    id: fila.id,
+    nombre: fila.nombre,
+    cargo: fila.cargo ?? undefined,
+    departamento: fila.departamento ?? undefined,
+    carrera: fila.carrera ?? undefined,
+    facultad: fila.facultad ?? undefined,
+    email: fila.email ?? undefined,
+    foto_url: fila.foto_url ?? null,
+    resumen: fila.resumen ?? undefined,
+    biografia: fila.biografia ?? undefined,
+    areas: fila.areas,
+    formacion: fila.formacion,
+  };
+}
+
 export function DocentesProvider({ children }: PropsWithChildren) {
   const [docentes, setDocentes] = useState<Docente[]>([]);
   const [total, setTotal] = useState(0);
@@ -167,6 +213,48 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   const [mensaje, setMensaje] = useState('');
   const [tono, setTono] = useState<'error' | 'info'>('error');
   const [cargadoUnaVez, setCargadoUnaVez] = useState(false);
+  const [pendientes, setPendientes] = useState(0);
+  const [sincronizando, setSincronizando] = useState(false);
+
+  const conexion = useConexion();
+  // null (aun sin medir) se trata como en linea para conservar el
+  // comportamiento actual hasta que NetInfo responda.
+  const enLinea = conexion !== false;
+
+  // Guarda la ultima lectura de `enLinea` para detectar la vuelta de la red.
+  const enLineaRef = useRef(enLinea);
+  enLineaRef.current = enLinea;
+
+  // Inicializa el detector de red una sola vez.
+  useEffect(() => {
+    initConexion();
+  }, []);
+
+  /** Relee el numero de operaciones pendientes (ignora fallos de SQLite). */
+  const actualizarPendientes = useCallback(async () => {
+    try {
+      setPendientes(await localDb.contarPendientes());
+    } catch (error) {
+      log(`  no se pudo contar la cola local: ${error instanceof Error ? error.message : error}`);
+    }
+  }, []);
+
+  /**
+   * Lee el listado desde SQLite (modo offline o respaldo).
+   * Devuelve true si habia datos locales que mostrar.
+   */
+  const leerLocal = useCallback(async () => {
+    const LIMITE = 50;
+    const datos = await localDb.listarLocales(
+      filtros.q.trim(), filtros.carrera, filtros.departamento, LIMITE, 0,
+    );
+    const totalLocal = await localDb.contarLocalesFiltrados(
+      filtros.q.trim(), filtros.carrera, filtros.departamento,
+    );
+    setDocentes(datos.map(localADocente));
+    setTotal(totalLocal);
+    return datos.length > 0 || totalLocal > 0;
+  }, [filtros]);
 
   /**
    * Pide el listado al gateway.
@@ -175,6 +263,8 @@ export function DocentesProvider({ children }: PropsWithChildren) {
    * unico camino para cambiar lo que se muestra, y evita el clásico "cambie el
    * filtro en pantalla pero la peticion iba con el anterior" (un `useEffect`
    * que dispara con dependencias equivocadas y se queda una peticion atrasada).
+   *
+   * Con red: fetch + espejo SQLite. Sin red (estado 0): lectura local.
    */
   const refrescar = useCallback(async () => {
     setCargando(true);
@@ -202,26 +292,47 @@ export function DocentesProvider({ children }: PropsWithChildren) {
       // Se protege con `?? []`: si el gateway devuelve algo raro, `docentes`
       // queda como lista vacia y la pantalla muestra el estado vacio en vez de
       // romperse al hacer `.map`.
-      setDocentes(Array.isArray(payload?.data) ? payload.data : []);
+      const data = Array.isArray(payload?.data) ? payload.data : [];
+      setDocentes(data);
       setTotal(typeof payload?.total === 'number' ? payload.total : 0);
       log(`  ${estado} en ${Date.now() - inicio}ms: ${payload?.count ?? 0} de ${payload?.total ?? 0}`);
+      // Espejo local: la proxima vez sin red se lee de aqui. Si SQLite falla
+      // (p. ej. web sin COOP/COEP), la nube sigue mandando: no se lanza.
+      try {
+        await localDb.reemplazarEspejo(data);
+      } catch (error) {
+        log(`  espejo local no disponible: ${error instanceof Error ? error.message : error}`);
+      }
+      await actualizarPendientes();
     } catch (error) {
       const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar el servicio.';
       log(`  ${estado || 'sin respuesta'} en ${Date.now() - inicio}ms: ${mensajeError}`);
-      // NO se borra la lista: si ya habia docentes en pantalla y un refresco
-      // falla, quitarlos deja la pestana vacia y da la impresion de que se perdio
-      // el dato. Es mejor mantener lo que se tenia y avisar con el Notice, que
-      // ya explica el motivo.
       if (esArranqueFrio(estado, mensajeError)) {
         setTono('info');
         setMensaje(MENSAJE_ARRANQUE_FRIO);
+      } else if (estado === 0) {
+        // SIN RED: respaldo SQLite. Un 503 nunca entra aqui (es arranque en
+        // frio, hay red). Solo la ausencia total de respuesta HTTP.
+        try {
+          const hayDatos = await leerLocal();
+          await actualizarPendientes();
+          setTono('info');
+          setMensaje(hayDatos ? MENSAJE_OFFLINE : `${MENSAJE_OFFLINE} Aun no hay datos guardados.`);
+        } catch (errorLocal) {
+          // NO se borra la lista: si ya habia docentes en pantalla y un
+          // refresco falla, quitarlos deja la pestana vacia y da la impresion
+          // de que se perdio el dato.
+          setTono('error');
+          setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
+          log(`  SQLite local tampoco disponible: ${errorLocal instanceof Error ? errorLocal.message : errorLocal}`);
+        }
       } else {
+        // NO se borra la lista: si ya habia docentes en pantalla y un refresco
+        // falla, quitarlos deja la pestana vacia y da la impresion de que se perdio
+        // el dato. Es mejor mantener lo que se tenia y avisar con el Notice, que
+        // ya explica el motivo.
         setTono('error');
-        setMensaje(
-          estado === 0
-            ? 'No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.'
-            : mensajeError,
-        );
+        setMensaje(mensajeError);
       }
     } finally {
       setCargando(false);
@@ -230,7 +341,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
       // responde la pantalla diria que el listado esta vacio.
       setCargadoUnaVez(true);
     }
-  }, [filtros]);
+  }, [filtros, leerLocal, actualizarPendientes]);
 
   /** Aplica filtros nuevos y vuelve a pedir el listado. */
   const filtrar = useCallback(async (nuevos: Partial<FiltrosDocentes>) => {
@@ -252,7 +363,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
     setFiltros(siguiente);
   }, [filtros]);
 
-  /** Pide una ficha por id. El id viaja como PATH PARAM. */
+  /** Pide una ficha por id. El id viaja como PATH PARAM. Sin red, lee SQLite. */
   const obtenerDocente = useCallback(async (id: number): Promise<Docente | null> => {
     log(`GET /api/docentes/${id} -> ${API_URL}`);
     let estado = 0;
@@ -277,14 +388,27 @@ export function DocentesProvider({ children }: PropsWithChildren) {
       if (esArranqueFrio(estado, mensajeError)) {
         setTono('info');
         setMensaje(MENSAJE_ARRANQUE_FRIO);
-      } else {
-        setTono('error');
-        setMensaje(
-          estado === 0
-            ? 'No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.'
-            : mensajeError,
-        );
+        return null;
       }
+      if (estado === 0) {
+        // Respaldo local: un id negativo solo existe en el dispositivo.
+        try {
+          const fila = await localDb.obtenerLocal(id);
+          if (fila) {
+            setTono('info');
+            setMensaje(MENSAJE_OFFLINE);
+            return localADocente(fila);
+          }
+          return null;
+        } catch {
+          // cae al error generico de abajo
+        }
+        setTono('error');
+        setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
+        return null;
+      }
+      setTono('error');
+      setMensaje(mensajeError);
       return null;
     }
   }, []);
@@ -320,9 +444,27 @@ export function DocentesProvider({ children }: PropsWithChildren) {
     return mensajeError;
   };
 
+  /** Recarga el listado desde SQLite tras una escritura offline. */
+  const recargarDesdeLocal = useCallback(async () => {
+    await leerLocal();
+    await actualizarPendientes();
+    try {
+      const todas = await localDb.listarLocales('', '', '', 50, 0);
+      const dedup = (xs: (string | null | undefined)[]) =>
+        [...new Set(xs.filter((x): x is string => !!x && x.trim() !== ''))].sort();
+      setFacetas({
+        facultad: dedup(todas.map(t => t.facultad)),
+        carrera: dedup(todas.map(t => t.carrera)),
+        departamento: dedup(todas.map(t => t.departamento)),
+      });
+    } catch {
+      // las facetas son prescindibles
+    }
+  }, [leerLocal, actualizarPendientes]);
+
   /**
-   * Crea un docente. Tras crearlo vuelve a pedir el listado y las facetas,
-   * para que la tarjeta nueva aparezca sin tener que recargar a mano.
+   * Crea un docente. Con red hace POST; sin red (estado 0) guarda en SQLite
+   * con id temporal negativo y encola la operacion.
    */
   const crearDocente = useCallback(
     async (datos: DocenteInput): Promise<Docente | null> => {
@@ -349,6 +491,39 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         return payload as Docente;
       } catch (error) {
         const mensajeError = error instanceof Error ? error.message : 'No se pudo guardar el docente.';
+        // Solo el estado 0 va a SQLite. Un 503 (arranque en frio) no: hay red
+        // y el dato no se ha guardado en ningun sitio.
+        if (estado === 0) {
+          try {
+            const idLocal = await localDb.crearLocal({
+              nombre: datos.nombre ?? '',
+              cargo: datos.cargo,
+              departamento: datos.departamento,
+              carrera: datos.carrera,
+              facultad: datos.facultad,
+              email: datos.email,
+              foto_url: datos.foto_url,
+              resumen: datos.resumen,
+              biografia: datos.biografia,
+              areas: datos.areas ?? [],
+              formacion: datos.formacion ?? [],
+            });
+            log(`  guardado LOCAL con id ${idLocal} (pendiente de sincronizar)`);
+            await recargarDesdeLocal();
+            setTono('info');
+            setMensaje('Guardado en el dispositivo sin conexion. Se sincronizara al volver la red.');
+            const fila = await localDb.obtenerLocal(idLocal);
+            return fila ? localADocente(fila) : null;
+          } catch (errorLocal) {
+            const msg = errorLocal instanceof Error ? errorLocal.message : 'No se pudo guardar localmente.';
+            log(`  fallo local: ${msg}`);
+            setTono('error');
+            setMensaje(msg);
+            return null;
+          } finally {
+            setCargando(false);
+          }
+        }
         log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
         setTono('error');
         setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
@@ -362,8 +537,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   );
 
   /**
-   * Actualiza un docente. Igual que crear: al terminar refresca el listado
-   * para que la tarjeta muestre los datos nuevos.
+   * Actualiza un docente. Con red hace PUT; sin red actualiza SQLite y encola.
    */
   const actualizarDocente = useCallback(
     async (id: number, datos: DocenteInput): Promise<Docente | null> => {
@@ -390,6 +564,37 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         return payload as Docente;
       } catch (error) {
         const mensajeError = error instanceof Error ? error.message : 'No se pudo actualizar el docente.';
+        if (estado === 0) {
+          try {
+            await localDb.actualizarLocal(id, {
+              nombre: datos.nombre,
+              cargo: datos.cargo,
+              departamento: datos.departamento,
+              carrera: datos.carrera,
+              facultad: datos.facultad,
+              email: datos.email,
+              foto_url: datos.foto_url,
+              resumen: datos.resumen,
+              biografia: datos.biografia,
+              areas: datos.areas,
+              formacion: datos.formacion,
+            });
+            log(`  actualizado LOCAL id ${id} (pendiente de sincronizar)`);
+            await recargarDesdeLocal();
+            setTono('info');
+            setMensaje('Cambio guardado en el dispositivo sin conexion. Se sincronizara al volver la red.');
+            const fila = await localDb.obtenerLocal(id);
+            return fila ? localADocente(fila) : null;
+          } catch (errorLocal) {
+            const msg = errorLocal instanceof Error ? errorLocal.message : 'No se pudo actualizar localmente.';
+            log(`  fallo local: ${msg}`);
+            setTono('error');
+            setMensaje(msg);
+            return null;
+          } finally {
+            setCargando(false);
+          }
+        }
         log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
         setTono('error');
         setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
@@ -403,8 +608,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   );
 
   /**
-   * Borra un docente. Tras borrar refresca el listado para que la tarjeta
-   * desaparezca sin recargar a mano.
+   * Borra un docente. Con red hace DELETE; sin red marca en SQLite y encola.
    */
   const eliminarDocente = useCallback(
     async (id: number): Promise<boolean> => {
@@ -430,6 +634,24 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         return true;
       } catch (error) {
         const mensajeError = error instanceof Error ? error.message : 'No se pudo borrar el docente.';
+        if (estado === 0) {
+          try {
+            await localDb.borrarLocal(id);
+            log(`  borrado LOCAL id ${id} (pendiente de sincronizar)`);
+            await recargarDesdeLocal();
+            setTono('info');
+            setMensaje('Borrado en el dispositivo sin conexion. Se sincronizara al volver la red.');
+            return true;
+          } catch (errorLocal) {
+            const msg = errorLocal instanceof Error ? errorLocal.message : 'No se pudo borrar localmente.';
+            log(`  fallo local: ${msg}`);
+            setTono('error');
+            setMensaje(msg);
+            return false;
+          } finally {
+            setCargando(false);
+          }
+        }
         log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
         setTono('error');
         setMensaje('No hubo respuesta del servidor. Revisa tu conexion e intenta de nuevo.');
@@ -448,6 +670,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
    * Va aparte del listado y se carga una vez. Son 3 listas cortas (facultades,
    * carreras y departamentos) que no cambian durante la sesion: pedirlas en cada
    * cambio de filtro serian dos viajes a la base para mostrar lo mismo de nuevo.
+   * Sin red, se calculan desde el espejo local.
    */
   const cargarFacetas = useCallback(async () => {
     log(`GET /api/docentes/facetas -> ${API_URL}`);
@@ -468,12 +691,202 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         departamento: Array.isArray(datos.departamento) ? datos.departamento : [],
       });
     } catch {
-      // Las facetas son una comodidad, no un dato imprescindible: si no se
-      // pueden cargar, la pantalla funciona igual sin los botones de filtro, asi
-      // que no se ensucia la pantalla con un aviso por esto.
-      log('  no se pudieron cargar las facetas; la lista funciona igual sin filtros');
+      // Respaldo local: las facetas salen del espejo SQLite.
+      try {
+        const todas = await localDb.listarLocales('', '', '', 50, 0);
+        if (todas.length === 0) {
+          log('  no se pudieron cargar las facetas; la lista funciona igual sin filtros');
+          return;
+        }
+        const dedup = (xs: (string | null | undefined)[]) =>
+          [...new Set(xs.filter((x): x is string => !!x && x.trim() !== ''))].sort();
+        setFacetas({
+          facultad: dedup(todas.map(t => t.facultad)),
+          carrera: dedup(todas.map(t => t.carrera)),
+          departamento: dedup(todas.map(t => t.departamento)),
+        });
+        log('  facetas desde SQLite local');
+      } catch {
+        // Las facetas son una comodidad, no un dato imprescindible: si no se
+        // pueden cargar, la pantalla funciona igual sin los botones de filtro, asi
+        // que no se ensucia la pantalla con un aviso por esto.
+        log('  no se pudieron cargar las facetas; la lista funciona igual sin filtros');
+      }
     }
   }, []);
+
+  /**
+   * Sincroniza la cola pendiente con la nube (subir lo local, luego bajar).
+   *
+   * Procesa la cola en orden FIFO. Cada operacion que el servidor acepta se
+   * elimina de la cola; si el servidor responde 409 (limite 20 o nombre
+   * duplicado) tambien se elimina pero se cuenta como descartada y se avisa.
+   * Si vuelve a fallar la red a mitad, se detiene y lo que queda sigue en cola.
+   */
+  const sincronizar = useCallback(async () => {
+    let cola: localDb.OperacionPendiente[];
+    try {
+      cola = await localDb.obtenerCola();
+    } catch (error) {
+      log(`  sincronizar: SQLite no disponible (${error instanceof Error ? error.message : error})`);
+      return;
+    }
+    if (cola.length === 0) {
+      await actualizarPendientes();
+      return;
+    }
+    setSincronizando(true);
+    setMensaje('');
+    setTono('error');
+    log(`SYNC: ${cola.length} operaciones pendientes`);
+    // Mapea ids temporales negativos a los ids reales que asigna el servidor.
+    const mapaIds = new Map<number, number>();
+    let subidas = 0;
+    let descartadas = 0;
+
+    const resolverId = (idLocal: number) => mapaIds.get(idLocal) ?? idLocal;
+
+    for (const op of cola) {
+      const idReal = resolverId(op.id_local);
+      try {
+        if (op.tipo === 'crear') {
+          // El id lo asigna el servidor: se manda el payload sin id.
+          const { ...datos } = op.payload as DocenteInput & { id?: number };
+          const response = await fetch(`${API_URL}/api/docentes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+            cache: 'no-store',
+            body: JSON.stringify(datos),
+          });
+          const payload = await response.json().catch(() => null);
+          if (!response.ok) {
+            if (response.status === 409 || response.status === 400) {
+              // La nube lo rechaza (limite o duplicado): se descarta de la
+              // cola y se borra el temporal local para no reintentarlo siempre.
+              await localDb.eliminarDeCola(op.orden);
+              try {
+                const database_fallo = op.id_local;
+                // Marca el temporal como borrado para que no reaparezca.
+                await localDb.borrarLocal(database_fallo);
+                await localDb.eliminarDeCola(op.orden).catch(() => {});
+              } catch {
+                // si ya no existe, no pasa nada
+              }
+              descartadas += 1;
+              log(`  SYNC crear orden ${op.orden}: descartada (${payload?.error ?? response.status})`);
+              continue;
+            }
+            throw new Error(payload?.error || `Error ${response.status} al subir la creacion`);
+          }
+          const creado = payload as Docente;
+          mapaIds.set(op.id_local, creado.id);
+          await localDb.reescribirIdLocal(op.id_local, creado.id);
+          await localDb.eliminarDeCola(op.orden);
+          subidas += 1;
+          log(`  SYNC crear orden ${op.orden}: local ${op.id_local} -> nube ${creado.id}`);
+        } else if (op.tipo === 'actualizar') {
+          if (idReal < 0) {
+            // Su `crear` aun no subio (no deberia pasar en FIFO, pero si la
+            // creacion se descarto, el actualizar queda huerfano).
+            await localDb.eliminarDeCola(op.orden);
+            descartadas += 1;
+            log(`  SYNC actualizar orden ${op.orden}: huerfana (crear descartada), se elimina`);
+            continue;
+          }
+          const response = await fetch(`${API_URL}/api/docentes/${encodeURIComponent(String(idReal))}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+            cache: 'no-store',
+            body: JSON.stringify(op.payload),
+          });
+          const payload = await response.json().catch(() => null);
+          if (!response.ok) {
+            if (response.status === 404 || response.status === 409 || response.status === 400) {
+              await localDb.eliminarDeCola(op.orden);
+              await localDb.marcarSincronizado(idReal).catch(() => {});
+              descartadas += 1;
+              log(`  SYNC actualizar orden ${op.orden}: descartada (${payload?.error ?? response.status})`);
+              continue;
+            }
+            throw new Error(payload?.error || `Error ${response.status} al subir la actualizacion`);
+          }
+          await localDb.eliminarDeCola(op.orden);
+          await localDb.marcarSincronizado(idReal).catch(() => {});
+          subidas += 1;
+          log(`  SYNC actualizar orden ${op.orden}: id ${idReal} ok`);
+        } else {
+          // borrar
+          if (idReal < 0) {
+            // Se creo y se borro sin red: no hay nada que subir.
+            await localDb.eliminarDeCola(op.orden);
+            log(`  SYNC borrar orden ${op.orden}: era temporal, nada que subir`);
+            continue;
+          }
+          const response = await fetch(`${API_URL}/api/docentes/${encodeURIComponent(String(idReal))}`, {
+            method: 'DELETE',
+            headers: { 'Cache-Control': 'no-cache' },
+            cache: 'no-store',
+          });
+          if (!response.ok && response.status !== 404) {
+            const payload = await response.json().catch(() => null);
+            throw new Error(payload?.error || `Error ${response.status} al subir el borrado`);
+          }
+          await localDb.eliminarDeCola(op.orden);
+          subidas += 1;
+          log(`  SYNC borrar orden ${op.orden}: id ${idReal} ok`);
+        }
+      } catch (error) {
+        // Sin red de nuevo (o gateway caido): se detiene, lo que queda sigue
+        // en cola para el proximo intento.
+        log(`  SYNC detenida en orden ${op.orden}: ${error instanceof Error ? error.message : error}`);
+        break;
+      }
+    }
+
+    // Bajar: recarga desde la nube y reemplaza el espejo.
+    try {
+      await refrescar();
+      await cargarFacetas();
+    } catch {
+      // refrescar ya pone su propio mensaje
+    } finally {
+      await actualizarPendientes();
+      setSincronizando(false);
+    }
+    const restantes = await localDb.contarPendientes().catch(() => 0);
+    if (restantes === 0) {
+      setTono('info');
+      setMensaje(
+        descartadas > 0
+          ? `Sincronizado: ${subidas} cambios subidos, ${descartadas} descartados por la nube (limite o duplicado).`
+          : `Sincronizado: ${subidas} cambios subidos a la nube.`,
+      );
+      log(`SYNC completa: ${subidas} subidas, ${descartadas} descartadas`);
+    } else {
+      setTono('info');
+      setMensaje(`Sincronizacion parcial: quedan ${restantes} cambios pendientes.`);
+    }
+  }, [refrescar, cargarFacetas, actualizarPendientes]);
+
+  // Sincronizacion automatica al volver la red.
+  const sincronizarRef = useRef(sincronizar);
+  sincronizarRef.current = sincronizar;
+  const estabaEnLinea = useRef(enLinea);
+  useEffect(() => {
+    const antes = estabaEnLinea.current;
+    estabaEnLinea.current = enLinea;
+    if (!antes && enLinea) {
+      // Volvio la red: si hay cola, se sube sola.
+      localDb.contarPendientes()
+        .then(n => {
+          if (n > 0) {
+            log(`Red de vuelta: sincronizando ${n} pendientes`);
+            void sincronizarRef.current();
+          }
+        })
+        .catch(() => {});
+    }
+  }, [enLinea]);
 
   // Cada vez que cambian los filtros se vuelve a pedir el listado, con los
   // filtros YA applied. Este efecto es el UNICO sitio que dispara una consulta
@@ -512,6 +925,9 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         mensaje,
         tono,
         vacio: cargadoUnaVez && docentes.length === 0,
+        enLinea,
+        pendientes,
+        sincronizando,
         filtrar,
         refrescar,
         obtenerDocente,
@@ -519,6 +935,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         actualizarDocente,
         eliminarDocente,
         cargarFacetas,
+        sincronizar,
       }}
     >
       {children}

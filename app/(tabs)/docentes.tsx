@@ -49,9 +49,13 @@ export default function DocentesScreen() {
     mensaje,
     tono,
     vacio,
+    enLinea,
+    pendientes,
+    sincronizando,
     filtrar,
     refrescar,
     cargarFacetas,
+    sincronizar,
   } = useDocentes();
 
   // El texto que se esta escribiendo se guarda aparte del filtro aplicado. Si se
@@ -174,6 +178,43 @@ export default function DocentesScreen() {
           </Pressable>
         </View>
 
+        {/* Estado offline + sincronizacion (Actividad en Clase 13). Aparece
+            solo sin red o cuando hay cambios pendientes de subir a la nube. */}
+        {!enLinea || pendientes > 0 ? (
+          <View style={styles.offlineRow}>
+            <View style={styles.offlineBadge}>
+              <MaterialCommunityIcons
+                name={enLinea ? 'cloud-upload-outline' : 'cloud-off-outline'}
+                size={16}
+                color={enLinea ? colors.docentes : '#b45309'}
+              />
+              <Text style={styles.offlineTexto}>
+                {!enLinea
+                  ? `Sin conexion${pendientes > 0 ? ` - ${pendientes} pendiente(s)` : ''}`
+                  : `${pendientes} cambio(s) por sincronizar`}
+              </Text>
+            </View>
+            {pendientes > 0 ? (
+              <Pressable
+                onPress={() => { void sincronizar(); }}
+                disabled={sincronizando || !enLinea}
+                accessibilityRole="button"
+                accessibilityLabel="Sincronizar cambios pendientes con la nube"
+                style={({ pressed }) => [
+                  styles.botonSync,
+                  { backgroundColor: colors.docentes },
+                  (pressed || sincronizando || !enLinea) && styles.botonSyncDisabled,
+                ]}
+              >
+                <MaterialCommunityIcons name="sync" size={16} color="#ffffff" />
+                <Text style={styles.botonNuevoTexto}>
+                  {sincronizando ? 'Sincronizando...' : `Sincronizar (${pendientes})`}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* Fila de filtros por carrera. Solo aparece si el servicio devolvio
             carreras: mostrar un desplegable vacio es peor que no mostrarlo. */}
         {facetas.carrera.length > 0 ? (
@@ -287,6 +328,30 @@ const styles = StyleSheet.create({
   },
   botonNuevoPressed: { opacity: 0.85 },
   botonNuevoTexto: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
+  // Fila de estado offline: insignia + boton de sincronizar.
+  offlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
+    padding: spacing.sm,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  offlineBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, flex: 1 },
+  offlineTexto: { color: colors.text, fontSize: 12, fontWeight: '600', flex: 1 },
+  botonSync: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+  },
+  botonSyncDisabled: { opacity: 0.5 },
   chips: { gap: spacing.xs, paddingRight: spacing.md },
   notaPie: {
     flexDirection: 'row',
