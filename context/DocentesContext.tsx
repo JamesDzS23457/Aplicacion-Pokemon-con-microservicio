@@ -24,6 +24,12 @@
 //     contra SQLite. Las escrituras se encolan en la tabla `cola` (outbox).
 //   - Al volver la red: `sincronizar()` sube la cola en orden FIFO y luego
 //     recarga desde la nube.
+//   - MONITOR (Tarea 10): cada `intervaloMs` (2s/10s/30s/Off, parametrizable en
+//     la pestana) `revisarNube()` pregunta si la nube cambio. Sin pendientes
+//     descarga en silencio; con pendientes sincroniza primero para no pisar lo
+//     local. Los ids no vistos llevan insignia "nuevo" (tabla `conocidos`) que
+//     se limpia al consultar la ficha. Choque por nombre duplicado al subir:
+//     se FUSIONA (PUT con lo local, gana lo local) en un solo registro.
 //
 // Regla del proyecto que este archivo respeta: la app NUNCA llama a un
 // microservicio ni a la base de datos en la nube. Solo al gateway (API_URL),
@@ -132,6 +138,14 @@ type DocentesContextValue = {
   pendientes: number;
   /** true mientras se esta sincronizando la cola. */
   sincronizando: boolean;
+  /** Ids de la nube que el usuario aun no consulta (llevan insignia "nuevo"). */
+  nuevosIds: number[];
+  /** Momento de la ultima revision automatica de la nube (null si aun no hubo). */
+  ultimaRevision: number | null;
+  /** Cada cuanto se revisa la nube (ms). 0 = revision automatica apagada. */
+  intervaloMs: number;
+  /** Cambia el intervalo de revision y lo guarda en el dispositivo. */
+  fijarIntervalo: (ms: number) => Promise<void>;
   /** Aplica filtros (query params) y vuelve a pedir el listado. */
   filtrar: (filtros: Partial<FiltrosDocentes>) => Promise<void>;
   /** Vuelve a pedir el listado con los filtros actuales. */
@@ -215,6 +229,10 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   const [cargadoUnaVez, setCargadoUnaVez] = useState(false);
   const [pendientes, setPendientes] = useState(0);
   const [sincronizando, setSincronizando] = useState(false);
+  const [nuevosIds, setNuevosIds] = useState<number[]>([]);
+  const [ultimaRevision, setUltimaRevision] = useState<number | null>(null);
+  // 10s por defecto: 2s es agresivo para la bateria y 30s tarda en la demo.
+  const [intervaloMs, setIntervaloMs] = useState(10_000);
 
   const conexion = useConexion();
   // null (aun sin medir) se trata como en linea para conservar el
@@ -224,10 +242,32 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   // Guarda la ultima lectura de `enLinea` para detectar la vuelta de la red.
   const enLineaRef = useRef(enLinea);
   enLineaRef.current = enLinea;
+  // Refs para el poll automatico y el blindaje (se leen en callbacks sin
+  // recrearlos: si fueran dependencias habria temporizadores duplicados).
+  const sincronizandoRef = useRef(sincronizando);
+  sincronizandoRef.current = sincronizando;
+  const cargandoRef = useRef(cargando);
+  cargandoRef.current = cargando;
 
-  // Inicializa el detector de red una sola vez.
+  // Inicializa el detector de red y carga el intervalo guardado (una sola vez).
   useEffect(() => {
     initConexion();
+    localDb.leerAjuste('poll_ms', '10000')
+      .then(v => {
+        const n = Number(v);
+        if (Number.isInteger(n) && n >= 0) setIntervaloMs(n);
+      })
+      .catch(() => { /* sin SQLite: queda el valor por defecto */ });
+  }, []);
+
+  /** Cambia el intervalo de revision automatica y lo persiste. */
+  const fijarIntervalo = useCallback(async (ms: number) => {
+    setIntervaloMs(ms);
+    try {
+      await localDb.guardarAjuste('poll_ms', String(ms));
+    } catch {
+      // sin SQLite no se persiste, pero igual aplica en memoria
+    }
   }, []);
 
   /** Relee el numero de operaciones pendientes (ignora fallos de SQLite). */
@@ -257,6 +297,48 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   }, [filtros]);
 
   /**
+   * Fusiona lo pendiente local sobre lo que trajo la nube, para pintar.
+   *
+   * Si hay operaciones sin subir, la nube trae la version vieja: se reemplaza
+   * con la fila local (actualizar), se quita si esta marcada para borrar y se
+   * agregan los creados locales (ids negativos). Asi lo pendiente nunca se
+   * esconde aunque la nube aun no lo tenga.
+   */
+  const fusionarPendientes = useCallback(
+    async (nube: Docente[], totalNube: number): Promise<{ lista: Docente[]; total: number }> => {
+      let pendientesFilas: localDb.DocenteLocal[];
+      try {
+        pendientesFilas = await localDb.obtenerFilasPendientes();
+      } catch {
+        return { lista: nube, total: totalNube };
+      }
+      if (pendientesFilas.length === 0) return { lista: nube, total: totalNube };
+      const borrados = new Set(
+        pendientesFilas.filter(p => p.accion === 'borrar').map(p => p.id),
+      );
+      const porId = new Map(pendientesFilas.map(p => [p.id, p]));
+      const lista = nube
+        .filter(d => !borrados.has(d.id))
+        .map(d => {
+          const p = porId.get(d.id);
+          return p && p.accion === 'actualizar' ? localADocente(p) : d;
+        });
+      let extra = 0;
+      for (const p of pendientesFilas) {
+        if (!lista.some(d => d.id === p.id)) {
+          lista.push(localADocente(p));
+          extra += 1;
+        }
+      }
+      // Orden alfabetico como la nube; los negativos (nuevos locales) quedan
+      // mezclados por nombre igual que el resto.
+      lista.sort((a, b) => a.nombre.localeCompare(b.nombre));
+      return { lista, total: totalNube + extra };
+    },
+    [],
+  );
+
+  /**
    * Pide el listado al gateway.
    *
    * No recibe los filtros: usa los del estado. Eso obliga a que `filtrar` sea el
@@ -265,17 +347,43 @@ export function DocentesProvider({ children }: PropsWithChildren) {
    * que dispara con dependencias equivocadas y se queda una peticion atrasada).
    *
    * Con red: fetch + espejo SQLite. Sin red (estado 0): lectura local.
+   *
+   * BLINDAJE: si hay operaciones pendientes y hay red, NO descarga directo
+   * (borraria del espejo lo que aun no subio): delega en sincronizar(), que
+   * sube primero y recarga despues. Solo se salta cuando ya se esta
+   * sincronizando, para no entrar en recursion.
+   *
+   * Modo silencioso (poll automatico): no muestra spinner, no limpia el
+   * mensaje y no avisa fallos; solo registra en el log.
    */
-  const refrescar = useCallback(async () => {
-    setCargando(true);
-    setMensaje('');
-    setTono('error');
+  const refrescar = useCallback(async (opts?: { silencioso?: boolean }) => {
+    const silencioso = opts?.silencioso === true;
+    if (!silencioso) {
+      setCargando(true);
+      setMensaje('');
+      setTono('error');
+    }
     const query = queryDeListado(filtros);
     const inicio = Date.now();
     log(`GET /api/docentes${query} -> ${API_URL}`);
     // 0 = ni siquiera hubo respuesta HTTP (sin red, o servicio dormido).
     let estado = 0;
     try {
+      // BLINDAJE: con pendientes y red, primero se sube y despues se descarga.
+      // Descargar directo (reemplazarEspejo) pisaria del espejo lo que aun no
+      // subio. Se delega en sincronizar(), salvo que ya se este sincronizando
+      // (su recarga final) para no entrar en recursion.
+      if (!silencioso && enLineaRef.current && !sincronizandoRef.current) {
+        try {
+          if ((await localDb.contarPendientes()) > 0) {
+            log('  hay pendientes: refrescar delega en sincronizar');
+            await sincronizarRef.current();
+            return;
+          }
+        } catch {
+          // Sin SQLite no hay cola que proteger: se sigue normal.
+        }
+      }
       const response = await fetch(`${API_URL}/api/docentes${query}`, {
         method: 'GET',
         headers: { 'Cache-Control': 'no-cache' },
@@ -293,20 +401,28 @@ export function DocentesProvider({ children }: PropsWithChildren) {
       // queda como lista vacia y la pantalla muestra el estado vacio en vez de
       // romperse al hacer `.map`.
       const data = Array.isArray(payload?.data) ? payload.data : [];
-      setDocentes(data);
-      setTotal(typeof payload?.total === 'number' ? payload.total : 0);
-      log(`  ${estado} en ${Date.now() - inicio}ms: ${payload?.count ?? 0} de ${payload?.total ?? 0}`);
+      const totalNube = typeof payload?.total === 'number' ? payload.total : 0;
+      log(`  ${estado} en ${Date.now() - inicio}ms: ${payload?.count ?? 0} de ${totalNube}`);
       // Espejo local: la proxima vez sin red se lee de aqui. Si SQLite falla
       // (p. ej. web sin COOP/COEP), la nube sigue mandando: no se lanza.
+      // El espejo preserva las filas pendientes (ver reemplazarEspejo).
       try {
         await localDb.reemplazarEspejo(data);
       } catch (error) {
         log(`  espejo local no disponible: ${error instanceof Error ? error.message : error}`);
       }
+      // Lo pendiente se pinta sobre lo de la nube para no esconderlo.
+      const { lista, total } = await fusionarPendientes(data, totalNube);
+      setDocentes(lista);
+      setTotal(total);
       await actualizarPendientes();
     } catch (error) {
       const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar el servicio.';
       log(`  ${estado || 'sin respuesta'} en ${Date.now() - inicio}ms: ${mensajeError}`);
+      if (silencioso) {
+        // El poll automatico no ensucia la pantalla: solo registra.
+        return;
+      }
       if (esArranqueFrio(estado, mensajeError)) {
         setTono('info');
         setMensaje(MENSAJE_ARRANQUE_FRIO);
@@ -335,13 +451,13 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         setMensaje(mensajeError);
       }
     } finally {
-      setCargando(false);
+      if (!silencioso) setCargando(false);
       // Se marca incluso si fallo. Es lo que distingue "no hay docentes" de
       // "todavia no se ha preguntado": sin esto, la primera vez que la base no
       // responde la pantalla diria que el listado esta vacio.
       setCargadoUnaVez(true);
     }
-  }, [filtros, leerLocal, actualizarPendientes]);
+  }, [filtros, leerLocal, actualizarPendientes, fusionarPendientes]);
 
   /** Aplica filtros nuevos y vuelve a pedir el listado. */
   const filtrar = useCallback(async (nuevos: Partial<FiltrosDocentes>) => {
@@ -381,7 +497,13 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         if (response.status === 404) return null;
         throw new Error(detail?.error || 'No se pudo consultar el servicio de docentes');
       }
-      return (await response.json()) as Docente;
+      const ficha = (await response.json()) as Docente;
+      // Visto: si venia con insignia "nuevo", se limpia al consultar.
+      try {
+        await localDb.marcarConocido(id);
+      } catch { /* insignia prescindible */ }
+      setNuevosIds(prev => prev.filter(n => n !== id));
+      return ficha;
     } catch (error) {
       const mensajeError = error instanceof Error ? error.message : 'No se pudo consultar el servicio.';
       log(`  ${estado || 'sin respuesta'}: ${mensajeError}`);
@@ -397,6 +519,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
           if (fila) {
             setTono('info');
             setMensaje(MENSAJE_OFFLINE);
+            setNuevosIds(prev => prev.filter(n => n !== id));
             return localADocente(fila);
           }
           return null;
@@ -488,6 +611,11 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         }
         await refrescar();
         await cargarFacetas();
+        try {
+          if (payload && typeof (payload as Docente).id === 'number') {
+            await localDb.marcarConocido((payload as Docente).id);
+          }
+        } catch { /* insignia prescindible */ }
         return payload as Docente;
       } catch (error) {
         const mensajeError = error instanceof Error ? error.message : 'No se pudo guardar el docente.';
@@ -521,6 +649,10 @@ export function DocentesProvider({ children }: PropsWithChildren) {
             setTono('info');
             setMensaje('Guardado en el dispositivo sin conexion. Se sincronizara al volver la red.');
             const fila = await localDb.obtenerLocal(idLocal);
+            // El que lo crea ya lo vio: no llevara insignia "nuevo".
+            try {
+              await localDb.marcarConocido(idLocal);
+            } catch { /* insignia prescindible */ }
             return fila ? localADocente(fila) : null;
           } catch (errorLocal) {
             const msg = errorLocal instanceof Error ? errorLocal.message : 'No se pudo guardar localmente.';
@@ -649,6 +781,7 @@ export function DocentesProvider({ children }: PropsWithChildren) {
           avisarFallo(estado, payload, 'borrar el docente');
           return false;
         }
+        setNuevosIds(prev => prev.filter(n => n !== id));
         await refrescar();
         await cargarFacetas();
         return true;
@@ -736,14 +869,128 @@ export function DocentesProvider({ children }: PropsWithChildren) {
   }, []);
 
   /**
+   * Detecta ids de la nube que el usuario aun no vio y los marca con "nuevo".
+   *
+   * Se usa al final de sincronizar() y en el poll automatico. No toca el
+   * espejo ni la lista: solo la insignia. Devuelve los ids frescos.
+   */
+  const detectarNuevos = useCallback(async (): Promise<number[]> => {
+    try {
+      const response = await fetch(`${API_URL}/api/docentes?limite=50`, {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache' },
+        cache: 'no-store',
+      });
+      if (!response.ok) return [];
+      const payload = await response.json();
+      const data = Array.isArray(payload?.data) ? payload.data : [];
+      const conocidos = await localDb.obtenerConocidos();
+      const frescos = data
+        .map((d: { id?: unknown }) => d?.id)
+        .filter((id): id is number => typeof id === 'number' && !conocidos.has(id));
+      if (frescos.length > 0) {
+        setNuevosIds(prev => [...new Set([...prev, ...frescos])]);
+        log(`  nuevos en la nube: ${frescos.join(', ')}`);
+      }
+      return frescos;
+    } catch {
+      return [];
+    }
+  }, []);
+
+  /**
+   * Busca en la nube el id de un docente por su nombre exacto.
+   *
+   * Se usa al fusionar: si el POST choca con UNIQUE, hay que encontrar la
+   * ficha existente para actualizarla en vez de duplicarla.
+   */
+  const buscarIdEnNube = useCallback(async (nombre: string): Promise<number | null> => {
+    try {
+      const response = await fetch(
+        `${API_URL}/api/docentes/buscar/${encodeURIComponent(nombre.trim())}`,
+        { method: 'GET', headers: { 'Cache-Control': 'no-cache' }, cache: 'no-store' },
+      );
+      if (!response.ok) return null;
+      const payload = await response.json();
+      const data = Array.isArray(payload?.data) ? payload.data : [];
+      const exacto = data.find(
+        (d: { nombre?: unknown }) =>
+          typeof d?.nombre === 'string' && d.nombre.trim() === nombre.trim(),
+      );
+      return typeof exacto?.id === 'number' ? exacto.id : null;
+    } catch {
+      return null;
+    }
+  }, []);
+  /**
+   * Fusiona un crear rechazado por nombre duplicado (UNIQUE en la nube).
+   *
+   * Es la politica decidida para el choque nube-vs-local: UN solo registro y
+   * ganan los datos locales por ser lo mas reciente. Busca la ficha existente
+   * por nombre exacto y le hace PUT solo con los campos que traen dato (los
+   * null/vacios no se mandan para no borrar lo que ya estaba bien en la nube).
+   * Despues elimina la fila temporal local: reescribir su id chocaria con la
+   * PRIMARY KEY porque ese id ya existe en el espejo.
+   *
+   * @returns Mensaje para el usuario, o null si no se pudo fusionar (ahi el
+   *   llamador lo descarta como antes). Si falla la RED, lanza para que la
+   *   operacion quede en cola y se reintente.
+   */
+  const fusionarCrearDuplicado = useCallback(
+    async (op: localDb.OperacionPendiente, nombre: string): Promise<string | null> => {
+      const idNube = await buscarIdEnNube(nombre);
+      if (idNube === null) return null;
+      const cuerpo: Record<string, unknown> = {};
+      const src = (op.payload ?? {}) as Record<string, unknown>;
+      for (const [clave, valor] of Object.entries(src)) {
+        if (clave === 'id') continue;
+        if (valor === null || valor === undefined) continue;
+        if (typeof valor === 'string' && valor.trim() === '') continue;
+        if (Array.isArray(valor) && valor.length === 0) continue;
+        cuerpo[clave] = valor;
+      }
+      if (typeof cuerpo.nombre !== 'string' || cuerpo.nombre.trim() === '') {
+        cuerpo.nombre = nombre;
+      }
+      // Si falla la red aqui, se lanza a proposito: la operacion queda en
+      // cola para el proximo intento en vez de descartarse.
+      const response = await fetch(
+        `${API_URL}/api/docentes/${encodeURIComponent(String(idNube))}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+          cache: 'no-store',
+          body: JSON.stringify(cuerpo),
+        },
+      );
+      if (!response.ok) return null;
+      await localDb.eliminarDeCola(op.orden);
+      await localDb.eliminarFilaLocal(op.id_local).catch(() => {});
+      try {
+        await localDb.marcarConocido(idNube);
+      } catch { /* insignia prescindible */ }
+      setNuevosIds(prev => prev.filter(n => n !== idNube));
+      log(`  SYNC crear orden ${op.orden}: fusionado en nube ${idNube} (gana lo local)`);
+      return `"${nombre}": ya existia en la nube; se fusiono con tus datos`;
+    },
+    [buscarIdEnNube],
+  );
+
+  /**
    * Sincroniza la cola pendiente con la nube (subir lo local, luego bajar).
    *
    * Procesa la cola en orden FIFO. Cada operacion que el servidor acepta se
-   * elimina de la cola; si el servidor responde 409 (limite 20 o nombre
-   * duplicado) tambien se elimina pero se cuenta como descartada y se avisa.
-   * Si vuelve a fallar la red a mitad, se detiene y lo que queda sigue en cola.
+   * elimina de la cola. Si el servidor responde 409 a un crear por nombre
+   * duplicado, NO se descarta: se FUSIONA (PUT a la ficha existente con los
+   * datos locales, que son lo mas reciente) y queda un solo registro. Otros
+   * 409/400 (limite 20, etc.) si se descartan y se avisa el motivo. Si vuelve
+   * a fallar la red a mitad, se detiene y lo que queda sigue en cola.
+   *
+   * Al terminar sin pendientes, detecta los ids nuevos de la nube para la
+   * insignia "nuevo".
    */
   const sincronizar = useCallback(async () => {
+    const fusionados: string[] = [];
     let cola: localDb.OperacionPendiente[];
     try {
       cola = await localDb.obtenerCola();
@@ -791,17 +1038,29 @@ export function DocentesProvider({ children }: PropsWithChildren) {
           const payload = await response.json().catch(() => null);
           if (!response.ok) {
             if (response.status === 409 || response.status === 400) {
-              // La nube lo rechaza (limite o duplicado): se descarta de la
-              // cola y se elimina la fila temporal para no reintentarla
-              // siempre. Se usa eliminarFilaLocal (sin encolar) y no
-              // borrarLocal: borrarLocal meteria OTRA operacion en la cola.
+              // Posible duplicado por nombre (UNIQUE en la nube): antes de
+              // descartar se intenta FUSIONAR, que es la politica decidida
+              // para el choque nube-vs-local (gana lo local por ser lo mas
+              // reciente, y queda UN solo registro).
+              const etiqueta = nombreDe(op.payload);
+              const fusionado = etiqueta
+                ? await fusionarCrearDuplicado(op, etiqueta)
+                : null;
+              if (fusionado) {
+                fusionados.push(fusionado);
+                subidas += 1;
+                continue;
+              }
+              // No era fusionable (limite 20, etc.): se descarta de la cola
+              // y se elimina la fila temporal para no reintentarla siempre.
+              // Se usa eliminarFilaLocal (sin encolar) y no borrarLocal:
+              // borrarLocal meteria OTRA operacion en la cola.
               await localDb.eliminarDeCola(op.orden);
               await localDb.eliminarFilaLocal(op.id_local).catch(() => {});
               const motivo = (payload && typeof payload === 'object' && 'error' in payload &&
                 typeof (payload as { error: unknown }).error === 'string')
                 ? (payload as { error: string }).error
                 : `Error ${response.status}`;
-              const etiqueta = nombreDe(op.payload);
               descartes.push(etiqueta ? `"${etiqueta}": ${motivo}` : motivo);
               log(`  SYNC crear orden ${op.orden}: descartada (${motivo})`);
               continue;
@@ -812,6 +1071,9 @@ export function DocentesProvider({ children }: PropsWithChildren) {
           mapaIds.set(op.id_local, creado.id);
           await localDb.reescribirIdLocal(op.id_local, creado.id);
           await localDb.eliminarDeCola(op.orden);
+          try {
+            await localDb.marcarConocido(creado.id);
+          } catch { /* insignia prescindible */ }
           subidas += 1;
           log(`  SYNC crear orden ${op.orden}: local ${op.id_local} -> nube ${creado.id}`);
         } else if (op.tipo === 'actualizar') {
@@ -888,19 +1150,120 @@ export function DocentesProvider({ children }: PropsWithChildren) {
       setSincronizando(false);
     }
     const restantes = await localDb.contarPendientes().catch(() => 0);
+    let nuevos = 0;
     if (restantes === 0) {
+      // Sin pendientes, la nube manda: se detectan los ids que el usuario aun
+      // no vio para la insignia "nuevo".
+      nuevos = (await detectarNuevos().catch(() => [] as number[])).length;
+    }
+    if (restantes === 0) {
+      const partes = [`Sincronizado: ${subidas} cambios subidos a la nube`];
+      if (fusionados.length > 0) partes.push(`${fusionados.length} fusionado(s): ${fusionados.join('; ')}`);
+      let texto = partes.join('. ') + '.';
+      if (descartes.length > 0) texto += ` No se pudo subir: ${descartes.join('; ')}.`;
+      if (nuevos > 0) texto += ` Hay ${nuevos} docente(s) nuevo(s) en la nube.`;
       setTono(descartes.length > 0 ? 'error' : 'info');
-      setMensaje(
-        descartes.length > 0
-          ? `Sincronizado: ${subidas} cambios subidos. No se pudo subir: ${descartes.join('; ')}.`
-          : `Sincronizado: ${subidas} cambios subidos a la nube.`,
-      );
-      log(`SYNC completa: ${subidas} subidas, ${descartes.length} descartadas (${descartes.join('; ')})`);
+      setMensaje(texto);
+      log(`SYNC completa: ${subidas} subidas, ${fusionados.length} fusiones, ${descartes.length} descartadas, ${nuevos} nuevos`);
     } else {
       setTono('info');
       setMensaje(`Sincronizacion parcial: quedan ${restantes} cambios pendientes.`);
     }
-  }, [refrescar, cargarFacetas, actualizarPendientes]);
+  }, [refrescar, cargarFacetas, actualizarPendientes, buscarIdEnNube, detectarNuevos, fusionarCrearDuplicado]);
+
+  /**
+   * Revision periodica de la nube (el "monitor" que pide la tarea).
+   *
+   * Cada `intervaloMs` pregunta a la nube sin molestar: si falla (503 de
+   * arranque en frio, timeouts) no toca la pantalla, solo registra. Si hay
+   * pendientes, no descarga directo: delega en sincronizar() para no pisar lo
+   * local. Si la nube cambio, reemplaza el espejo, refresca la vista en
+   * silencio y marca los ids frescos con la insignia "nuevo".
+   *
+   * No corre sin red, mientras se sincroniza ni mientras el usuario guarda
+   * (para no pisarle el Notice del formulario).
+   */
+  const revisarNube = useCallback(async () => {
+    if (!enLineaRef.current || sincronizandoRef.current || cargandoRef.current) return;
+    log('POLL: revisando cambios en la nube');
+    try {
+      const cola = await localDb.contarPendientes().catch(() => 0);
+      if (cola > 0) {
+        log(`  POLL: hay ${cola} pendiente(s), se sincroniza en vez de descargar`);
+        await sincronizarRef.current();
+        setUltimaRevision(Date.now());
+        return;
+      }
+      const response = await fetch(`${API_URL}/api/docentes?limite=50`, {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache' },
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        log(`  POLL: nube responde ${response.status}, se reintenta en el proximo ciclo`);
+        return;
+      }
+      const payload = await response.json();
+      const data = Array.isArray(payload?.data) ? payload.data : [];
+      const huellas = await localDb.huellasLocales();
+      const idsNube = new Set(
+        data.map((d: { id?: unknown }) => d?.id).filter((id): id is number => typeof id === 'number'),
+      );
+      const huboBajas = [...huellas.keys()].some(id => id > 0 && !idsNube.has(id));
+      const huboCambios = data.some(
+        (d: { id?: unknown }) =>
+          typeof d?.id === 'number' && huellas.get(d.id) !== localDb.huellaDocente(d),
+      );
+      // Ids que la nube trae y NO estaban en el espejo local ANTES de refrescar:
+      // candidatos a "nuevo". Se confirman despues del refresco, porque en la
+      // primera descarga reemplazarEspejo siembra los ids como conocidos y
+      // entonces ninguno es nuevo (si no, los 2 de la base saldrian con NUEVO).
+      const llegaron = data
+        .map((d: { id?: unknown }) => d?.id)
+        .filter((id): id is number => typeof id === 'number' && !huellas.has(id));
+      if (llegaron.length === 0 && !huboBajas && !huboCambios && data.length === huellas.size) {
+        setUltimaRevision(Date.now());
+        return;
+      }
+      // Hubo cambios: refrescar() baja y reemplaza el espejo en silencio (aqui
+      // la cola esta vacia, asi que no delega en sincronizar). No se llama a
+      // reemplazarEspejo aparte para no hacerlo dos veces.
+      await refrescar({ silencioso: true });
+      await cargarFacetas();
+      const conocidos = await localDb.obtenerConocidos();
+      const frescos = llegaron.filter(id => !conocidos.has(id));
+      if (frescos.length > 0) {
+        setNuevosIds(prev => [...new Set([...prev, ...frescos])]);
+        setTono('info');
+        setMensaje(
+          `Hay ${frescos.length} docente(s) nuevo(s) en la nube (marca NUEVO). ` +
+          `Abre su ficha para quitar la marca.`,
+        );
+      }
+      setUltimaRevision(Date.now());
+      log(`  POLL: espejo actualizado, ${frescos.length} nuevo(s)`);
+    } catch (error) {
+      log(`  POLL omitido: ${error instanceof Error ? error.message : error}`);
+    }
+  }, [refrescar, cargarFacetas]);
+
+  // Temporizador del monitor. Se recrea SOLO al cambiar el intervalo; con 0
+  // esta apagado. Dispara una revision inmediata al activarse para no esperar
+  // el primer ciclo con la pantalla desactualizada.
+  //
+  // `revisarNube` cambia de identidad con cada filtro (depende de `refrescar`),
+  // asi que se lee por ref: si fuera dependencia, cada tecla del buscador
+  // reiniciaria el temporizador y dispararia un poll de mas.
+  const revisarNubeRef = useRef(revisarNube);
+  revisarNubeRef.current = revisarNube;
+  useEffect(() => {
+    if (intervaloMs <= 0) return;
+    void revisarNubeRef.current();
+    const timer = setInterval(() => {
+      void revisarNubeRef.current();
+    }, intervaloMs);
+    return () => clearInterval(timer);
+  }, [intervaloMs]);
 
   // Sincronizacion automatica al volver la red.
   const sincronizarRef = useRef(sincronizar);
@@ -962,6 +1325,10 @@ export function DocentesProvider({ children }: PropsWithChildren) {
         enLinea,
         pendientes,
         sincronizando,
+        nuevosIds,
+        ultimaRevision,
+        intervaloMs,
+        fijarIntervalo,
         filtrar,
         refrescar,
         obtenerDocente,

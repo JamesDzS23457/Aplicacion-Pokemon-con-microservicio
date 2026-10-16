@@ -321,6 +321,29 @@ Los valores técnicos se humanizan antes de mostrarse: la altura y el peso de
 PokéAPI (decímetros y hectogramos) pasan a metros y kilos, y las recompensas de
 One Piece se agrupan con separador de miles (`฿ 3.000.000.000`).
 
+## Modo offline y monitor de la nube (Docentes)
+
+La pestaña de Docentes funciona **sin conexión** y se sincroniza sola. La nube
+(Supabase) sigue siendo la base principal; el dispositivo guarda un **espejo** en
+SQLite (`expo-sqlite`) que también sirve de cola de operaciones pendientes.
+
+- **Sin red** (`lib/conexion.ts` lo detecta con NetInfo): las lecturas salen del
+  espejo local y las altas/ediciones/borrados se guardan localmente y se encolan.
+  Un `503` **no** es "sin red" (es un arranque en frío de Render), así que nunca
+  activa el modo offline.
+- **Al volver la red**: la cola se sube en orden FIFO y luego se recarga. Los ids
+  locales se reescriben con el id real que asigna el microservicio.
+- **Monitor periódico**: cada 2s/10s/30s (o apagado) el frontend pregunta a la
+  nube si cambió algo. Si no hay pendientes, actualiza en silencio; si los hay,
+  sincroniza primero para no pisar los cambios locales.
+- **Indicador "nuevo"**: un docente que aparece en la nube y que el usuario aún no
+  consultó lleva una insignia **NUEVO** (y un aviso), que desaparece al abrir su
+  ficha.
+- **Conflictos**: si un alta local choca con un nombre ya insertado en la nube
+  (la columna `nombre` es `UNIQUE`), en vez de descartarla se **fusiona**: se
+  actualiza la ficha existente con los datos locales (gana lo local) y queda un
+  único registro.
+
 ## Despliegue
 
 ```bash
@@ -369,6 +392,7 @@ así que Vercel solo sirve archivos: no ejecuta Node en producción. El archivo
 | `outputDirectory` | `dist` es lo que Vercel publica |
 | `framework: null` | Evita que Vercel detecte "Expo" y aplique su propio preset |
 | `rewrites` | expo-router es una SPA: toda ruta desconocida vuelve a `index.html` |
+| `headers` (COOP/COEP) | `expo-sqlite` en web usa `SharedArrayBuffer` y exige contexto aislado. Se usa `Cross-Origin-Embedder-Policy: credentialless` (y no `require-corp`) porque `credentialless` mantiene el aislamiento y a la vez deja cargar las fotos externas de los docentes, que `require-corp` bloquea |
 
 `EXPO_PUBLIC_API_URL` se incrusta en el bundle **en tiempo de build**, no de
 ejecución. Por eso vive en `.env.production` (se commitea, no es secreta) y no

@@ -49,55 +49,101 @@ type ColaItem = {
 // ---------------------------------------------------------------------------
 
 let db: SQLite.SQLiteDatabase | null = null;
+// Se cachea la PROMESA de inicializacion, no solo el handle: varias llamadas
+// simultaneas (poll + listado + cola en el primer render) abrian la MISMA base
+// OPFS a la vez y wa-sqlite reventaba con "reading 'xLock'". Con la promesa
+// todas esperan a la misma apertura y el esquema corre una sola vez.
+let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
-const ESQUEMA = `
--- Tabla espejo de docentes
-CREATE TABLE IF NOT EXISTS docentes_local (
-  id              INTEGER PRIMARY KEY,
-  nombre          TEXT    NOT NULL,
-  cargo           TEXT,
-  departamento    TEXT,
-  carrera         TEXT,
-  facultad        TEXT,
-  email           TEXT,
-  foto_url        TEXT,
-  resumen         TEXT,
-  biografia       TEXT,
-  areas           TEXT    NOT NULL DEFAULT '[]',
-  formacion       TEXT    NOT NULL DEFAULT '[]',
-  search_key      TEXT    NOT NULL,
-  carrera_key     TEXT,
-  departamento_key TEXT,
-  sincronizado    INTEGER NOT NULL DEFAULT 1,
-  accion          TEXT,
-  fecha_local     INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_docentes_search_key ON docentes_local (search_key);
-CREATE INDEX IF NOT EXISTS idx_docentes_carrera_key ON docentes_local (carrera_key);
-CREATE INDEX IF NOT EXISTS idx_docentes_departamento_key ON docentes_local (departamento_key);
-CREATE INDEX IF NOT EXISTS idx_docentes_sincronizado ON docentes_local (sincronizado);
-
--- Cola de operaciones pendientes (outbox)
-CREATE TABLE IF NOT EXISTS cola (
-  orden       INTEGER PRIMARY KEY AUTOINCREMENT,
-  tipo        TEXT    NOT NULL CHECK (tipo IN ('crear','actualizar','borrar')),
-  id_local    INTEGER NOT NULL,
-  payload     TEXT    NOT NULL,
-  creado_en   INTEGER NOT NULL
-);
-`;
+const ESQUEMA: string[] = [
+  // Tabla espejo de docentes. Van UNA sentencia por llamada a execAsync:
+  // el wrapper web de expo-sqlite no garantiza multi-statement y en ese caso
+  // las tablas siguientes quedaban sin crear ("no such table").
+  `CREATE TABLE IF NOT EXISTS docentes_local (
+    id              INTEGER PRIMARY KEY,
+    nombre          TEXT    NOT NULL,
+    cargo           TEXT,
+    departamento    TEXT,
+    carrera         TEXT,
+    facultad        TEXT,
+    email           TEXT,
+    foto_url        TEXT,
+    resumen         TEXT,
+    biografia       TEXT,
+    areas           TEXT    NOT NULL DEFAULT '[]',
+    formacion       TEXT    NOT NULL DEFAULT '[]',
+    search_key      TEXT    NOT NULL,
+    carrera_key     TEXT,
+    departamento_key TEXT,
+    sincronizado    INTEGER NOT NULL DEFAULT 1,
+    accion          TEXT,
+    fecha_local     INTEGER NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_docentes_search_key ON docentes_local (search_key)',
+  'CREATE INDEX IF NOT EXISTS idx_docentes_carrera_key ON docentes_local (carrera_key)',
+  'CREATE INDEX IF NOT EXISTS idx_docentes_departamento_key ON docentes_local (departamento_key)',
+  'CREATE INDEX IF NOT EXISTS idx_docentes_sincronizado ON docentes_local (sincronizado)',
+  // Cola de operaciones pendientes (outbox)
+  `CREATE TABLE IF NOT EXISTS cola (
+    orden       INTEGER PRIMARY KEY AUTOINCREMENT,
+    tipo        TEXT    NOT NULL CHECK (tipo IN ('crear','actualizar','borrar')),
+    id_local    INTEGER NOT NULL,
+    payload     TEXT    NOT NULL,
+    creado_en   INTEGER NOT NULL
+  )`,
+  // Docentes ya vistos: un id de la nube fuera de aqui lleva insignia "nuevo".
+  // Se siembra en la primera descarga para no marcar los que ya estaban.
+  `CREATE TABLE IF NOT EXISTS conocidos (
+    id          INTEGER PRIMARY KEY,
+    visto_en    INTEGER NOT NULL
+  )`,
+  // Ajustes del dispositivo (intervalo de revision de la nube, etc.).
+  `CREATE TABLE IF NOT EXISTS ajustes (
+    clave       TEXT PRIMARY KEY,
+    valor       TEXT NOT NULL
+  )`,
+];
 
 const LIMITE_DOCENTES = 20;
 
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
-  if (!db) {
-    db = await SQLite.openDatabaseAsync('docentes.db');
-    await db.execAsync(ESQUEMA);
-    // WAL para mejor concurrencia
-    await db.execAsync('PRAGMA journal_mode = WAL;');
+  if (!dbPromise) {
+    dbPromise = (async () => {
+      const database = await SQLite.openDatabaseAsync('docentes.db');
+      for (const sentencia of ESQUEMA) {
+        await database.execAsync(sentencia);
+      }
+      // WAL para mejor concurrencia
+      await database.execAsync('PRAGMA journal_mode = WAL;');
+      db = database;
+      return database;
+    })().catch(error => {
+      // Si falla la apertura, se permite reintentar en la proxima llamada.
+      dbPromise = null;
+      throw error;
+    });
   }
-  return db;
+  return dbPromise;
+}
+
+// ---------------------------------------------------------------------------
+// SERIALIZACION DE ESCRITURAS
+//
+// SQLite tiene UNA sola conexion y expo-sqlite en web (wa-sqlite) revienta con
+// "cannot start a transaction within a transaction" si dos withTransactionAsync
+// se solapan. Varias partes de la app escriben a la vez (el poll de la nube, el
+// listado, la cola), asi que toda funcion que abra una transaccion pasa por
+// `enSerie`: se encolan y corren de una en una, en orden de llegada.
+// ---------------------------------------------------------------------------
+
+let colaEscritura: Promise<unknown> = Promise.resolve();
+
+function enSerie<T>(fn: () => Promise<T>): Promise<T> {
+  const resultado = colaEscritura.then(fn, fn);
+  // La cola sigue viva aunque una operacion falle: el error se propaga al
+  // llamador de ESA operacion, no a las siguientes.
+  colaEscritura = resultado.then(() => undefined, () => undefined);
+  return resultado;
 }
 
 /** Valida el email con la MISMA regla que el servicio (fail fast: mejor avisar
@@ -153,12 +199,39 @@ function mapRow(row: any): DocenteLocal {
 // ESPEJO LOCAL (lectura/escritura sincronizada desde la nube)
 // ---------------------------------------------------------------------------
 
-/** Reemplaza todo el espejo local con lo que viene de la nube. */
+/**
+ * Reemplaza todo el espejo local con lo que viene de la nube.
+ *
+ * PRESERVA las filas pendientes de subir (accion NOT NULL): borrarlas
+ * destruiria cambios hechos sin red que aun no se sincronizaron. Las filas
+ * de la nube cuyo id coincide con una pendiente se omiten (manda la version
+ * local hasta que suba). Una fila pendiente de 'borrar' tampoco deja que la
+ * nube la resucite: se omite su reinsercion.
+ *
+ * Si el espejo estaba vacio y no hay conocidos, es la primera descarga: se
+ * siembran todos los ids como conocidos para no marcar como "nuevos" los que
+ * ya estaban.
+ */
 export async function reemplazarEspejo(docentes: any[]): Promise<void> {
+  return enSerie(async () => {
   const database = await getDb();
   await database.withTransactionAsync(async () => {
-    await database.execAsync('DELETE FROM docentes_local;');
+    const previas = await database.getFirstAsync<{ n: number }>(
+      'SELECT COUNT(*) as n FROM docentes_local'
+    );
+    const conocidosPrevios = await database.getFirstAsync<{ n: number }>(
+      'SELECT COUNT(*) as n FROM conocidos'
+    );
+    const primera = (previas?.n ?? 0) === 0 && (conocidosPrevios?.n ?? 0) === 0;
+
+    const pendientes = await database.getAllAsync<{ id: number }>(
+      'SELECT id FROM docentes_local WHERE accion IS NOT NULL'
+    );
+    const idsPendientes = new Set(pendientes.map(r => r.id));
+
+    await database.execAsync('DELETE FROM docentes_local WHERE accion IS NULL;');
     for (const d of docentes) {
+      if (typeof d?.id !== 'number' || idsPendientes.has(d.id)) continue;
       await database.runAsync(
         `INSERT INTO docentes_local (
           id, nombre, cargo, departamento, carrera, facultad, email,
@@ -185,7 +258,14 @@ export async function reemplazarEspejo(docentes: any[]): Promise<void> {
           Date.now(),
         ],
       );
+      if (primera) {
+        await database.runAsync(
+          'INSERT OR IGNORE INTO conocidos (id, visto_en) VALUES (?, ?)',
+          [d.id, Date.now()],
+        );
+      }
     }
+  });
   });
 }
 
@@ -314,6 +394,7 @@ async function siguienteIdLocal(): Promise<number> {
 
 /** Crea localmente y encola para sincronizar. */
 export async function crearLocal(docente: Omit<DocenteLocal, 'id' | 'search_key' | 'carrera_key' | 'departamento_key' | 'sincronizado' | 'accion' | 'fecha_local'>): Promise<number> {
+  return enSerie(async () => {
   const database = await getDb();
 
   // Validar limite 20 en local
@@ -369,6 +450,7 @@ export async function crearLocal(docente: Omit<DocenteLocal, 'id' | 'search_key'
   });
 
   return id;
+  });
 }
 
 /** Actualiza localmente y encola. */
@@ -376,6 +458,7 @@ export async function actualizarLocal(
   id: number,
   cambios: Partial<Omit<DocenteLocal, 'id' | 'search_key' | 'carrera_key' | 'departamento_key' | 'sincronizado' | 'accion' | 'fecha_local'>>
 ): Promise<boolean> {
+  return enSerie(async () => {
   const database = await getDb();
   const fecha = Date.now();
 
@@ -437,10 +520,12 @@ export async function actualizarLocal(
   });
 
   return true;
+  });
 }
 
 /** Marca como borrado localmente y encola. */
 export async function borrarLocal(id: number): Promise<boolean> {
+  return enSerie(async () => {
   const database = await getDb();
   const fecha = Date.now();
 
@@ -457,6 +542,7 @@ export async function borrarLocal(id: number): Promise<boolean> {
   });
 
   return true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +578,7 @@ export async function eliminarDeCola(orden: number): Promise<void> {
 
 /** Reescribe el id local temporal por el id real del servidor (tras crear). */
 export async function reescribirIdLocal(id_local: number, id_real: number): Promise<void> {
+  return enSerie(async () => {
   const database = await getDb();
   await database.withTransactionAsync(async () => {
     await database.runAsync(
@@ -503,6 +590,7 @@ export async function reescribirIdLocal(id_local: number, id_real: number): Prom
       'UPDATE cola SET id_local = ? WHERE id_local = ?',
       [id_real, id_local],
     );
+  });
   });
 }
 
@@ -545,4 +633,107 @@ export async function contarPendientes(): Promise<number> {
   const database = await getDb();
   const row = await database.getFirstAsync<{ n: number }>('SELECT COUNT(*) as n FROM cola');
   return row?.n ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// CONOCIDOS (banderas "nuevo"), AJUSTES Y HUELLAS
+// ---------------------------------------------------------------------------
+
+/** Ids que el usuario ya vio. Un id de la nube fuera de aqui lleva "nuevo". */
+export async function obtenerConocidos(): Promise<Set<number>> {
+  const database = await getDb();
+  const rows = await database.getAllAsync<{ id: number }>('SELECT id FROM conocidos');
+  return new Set(rows.map(r => r.id));
+}
+
+/** Marca un id como visto (al consultar su ficha o al crearlo uno mismo). */
+export async function marcarConocido(id: number): Promise<void> {
+  const database = await getDb();
+  await database.runAsync(
+    'INSERT OR IGNORE INTO conocidos (id, visto_en) VALUES (?, ?)',
+    [id, Date.now()],
+  );
+}
+
+/** Marca varios ids como vistos de una vez. */
+export async function marcarConocidos(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  return enSerie(async () => {
+  const database = await getDb();
+  const ahora = Date.now();
+  await database.withTransactionAsync(async () => {
+    for (const id of ids) {
+      await database.runAsync(
+        'INSERT OR IGNORE INTO conocidos (id, visto_en) VALUES (?, ?)',
+        [id, ahora],
+      );
+    }
+  });
+  });
+}
+
+/** Lee un ajuste del dispositivo (intervalo de revision, etc.). */
+export async function leerAjuste(clave: string, defecto: string): Promise<string> {
+  const database = await getDb();
+  const row = await database.getFirstAsync<{ valor: string }>(
+    'SELECT valor FROM ajustes WHERE clave = ?',
+    [clave],
+  );
+  return row?.valor ?? defecto;
+}
+
+/** Guarda un ajuste del dispositivo. */
+export async function guardarAjuste(clave: string, valor: string): Promise<void> {
+  const database = await getDb();
+  await database.runAsync(
+    'INSERT INTO ajustes (clave, valor) VALUES (?, ?) ' +
+    'ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor',
+    [clave, valor],
+  );
+}
+
+/**
+ * Huella de contenido de un docente (nube o local): sirve para detectar que
+ * una ficha CAMBIO en la nube aunque siga teniendo el mismo id. Solo importan
+ * los campos visibles/editables, no los metadatos.
+ */
+export function huellaDocente(d: any): string {
+  const partes = [
+    d?.nombre ?? '',
+    d?.cargo ?? '',
+    d?.departamento ?? '',
+    d?.carrera ?? '',
+    d?.facultad ?? '',
+    d?.email ?? '',
+    d?.foto_url ?? '',
+    d?.resumen ?? '',
+    d?.biografia ?? '',
+    JSON.stringify(d?.areas ?? []),
+    JSON.stringify(d?.formacion ?? []),
+  ];
+  return partes.join('|');
+}
+
+/** Huellas de todo el espejo local, por id (omite los borrados pendientes). */
+export async function huellasLocales(): Promise<Map<number, string>> {
+  const database = await getDb();
+  const rows = await database.getAllAsync<any>(
+    'SELECT * FROM docentes_local WHERE (accion IS NULL OR accion != ?)',
+    ['borrar'],
+  );
+  const mapa = new Map<number, string>();
+  for (const row of rows) {
+    const f = mapRow(row);
+    mapa.set(f.id, huellaDocente(f));
+  }
+  return mapa;
+}
+
+/** Filas con cambios sin subir (para mostrarlas sobre lo de la nube). */
+export async function obtenerFilasPendientes(): Promise<DocenteLocal[]> {
+  const database = await getDb();
+  const rows = await database.getAllAsync<any>(
+    'SELECT * FROM docentes_local WHERE accion IS NOT NULL ORDER BY fecha_local'
+  );
+  return rows.map(mapRow);
 }

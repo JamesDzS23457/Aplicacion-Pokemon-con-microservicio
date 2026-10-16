@@ -52,6 +52,10 @@ export default function DocentesScreen() {
     enLinea,
     pendientes,
     sincronizando,
+    nuevosIds,
+    ultimaRevision,
+    intervaloMs,
+    fijarIntervalo,
     filtrar,
     refrescar,
     cargarFacetas,
@@ -178,6 +182,47 @@ export default function DocentesScreen() {
           </Pressable>
         </View>
 
+        {/* Monitor de la nube (Tarea 10): cada N segundos revisa si la nube
+            cambio. Off = solo revision manual. La ultima revision confirma que
+            el ciclo sigue vivo (util en la demo: se ve cuando miro por ultima
+            vez aunque no hubiera cambios). */}
+        <View style={styles.pollRow}>
+          <Text style={styles.pollEtiqueta}>Nube cada:</Text>
+          {[
+            { etiqueta: '2s', ms: 2000 },
+            { etiqueta: '10s', ms: 10000 },
+            { etiqueta: '30s', ms: 30000 },
+            { etiqueta: 'Off', ms: 0 },
+          ].map(opcion => (
+            <ChipFiltro
+              key={opcion.etiqueta}
+              etiqueta={opcion.etiqueta}
+              activo={intervaloMs === opcion.ms}
+              onPress={() => { void fijarIntervalo(opcion.ms); }}
+            />
+          ))}
+          <Text style={styles.pollRevision}>
+            {intervaloMs <= 0
+              ? 'pausado'
+              : ultimaRevision
+                ? `rev. ${new Date(ultimaRevision).toLocaleTimeString()}`
+                : 'mirando...'}
+          </Text>
+        </View>
+
+        {/* Docentes nuevos en la nube (Tarea 10): aparecen con insignia NUEVO
+            hasta que se consulta su ficha. */}
+        {nuevosIds.length > 0 ? (
+          <View style={styles.nuevosRow}>
+            <MaterialCommunityIcons name="new-box" size={16} color={colors.success} />
+            <Text style={styles.nuevosTexto}>
+              {nuevosIds.length === 1
+                ? '1 docente nuevo en la nube (marca NUEVO)'
+                : `${nuevosIds.length} docentes nuevos en la nube (marca NUEVO)`}
+            </Text>
+          </View>
+        ) : null}
+
         {/* Estado offline + sincronizacion (Actividad en Clase 13). Aparece
             solo sin red o cuando hay cambios pendientes de subir a la nube. */}
         {!enLinea || pendientes > 0 ? (
@@ -262,7 +307,12 @@ export default function DocentesScreen() {
               right={`${docentes.length} de ${total}`}
             />
             {docentes.map((docente) => (
-              <TarjetaDocente key={docente.id} docente={docente} onPress={abrirFicha} />
+              <TarjetaDocente
+                key={docente.id}
+                docente={docente}
+                nuevo={nuevosIds.includes(docente.id)}
+                onPress={abrirFicha}
+              />
             ))}
           </>
         ) : null}
@@ -353,6 +403,28 @@ const styles = StyleSheet.create({
   },
   botonSyncDisabled: { opacity: 0.5 },
   chips: { gap: spacing.xs, paddingRight: spacing.md },
+  // Monitor de la nube (Tarea 10): intervalo parametrizable + ultima revision.
+  pollRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  pollEtiqueta: { color: colors.textSoft, fontSize: 12, fontWeight: '700' },
+  pollRevision: { color: colors.textFaint, fontSize: 11, marginLeft: 'auto' },
+  // Banner de nuevos en la nube (Tarea 10).
+  nuevosRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    padding: spacing.sm,
+    backgroundColor: colors.successSoft,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.success,
+  },
+  nuevosTexto: { flex: 1, color: colors.success, fontSize: 12, fontWeight: '700' },
   notaPie: {
     flexDirection: 'row',
     alignItems: 'flex-start',

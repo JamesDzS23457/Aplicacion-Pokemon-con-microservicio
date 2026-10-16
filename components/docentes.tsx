@@ -138,9 +138,12 @@ const LINEAS_RESUMEN = 3;
 export function TarjetaDocente({
   docente,
   onPress,
+  nuevo = false,
 }: {
   docente: Docente;
   onPress: (docente: Docente) => void;
+  /** Si true, el docente llego de la nube y aun no se consulta: insignia NUEVO. */
+  nuevo?: boolean;
 }) {
   const color = colorDeFacultad(docente.facultad);
 
@@ -156,9 +159,20 @@ export function TarjetaDocente({
       <View style={styles.tarjetaTop}>
         <FotoDocente docente={docente} tamano={64} />
         <View style={styles.tarjetaIdentidad}>
-          <Text style={styles.tarjetaNombre} numberOfLines={2}>
-            {docente.nombre}
-          </Text>
+          <View style={styles.tarjetaNombreRow}>
+            <Text style={styles.tarjetaNombre} numberOfLines={2}>
+              {docente.nombre}
+            </Text>
+            {nuevo ? (
+              <View
+                style={[styles.nuevoBadge, { backgroundColor: colors.success }]}
+                accessibilityRole="text"
+                accessibilityLabel="Nuevo docente en la nube"
+              >
+                <Text style={styles.nuevoBadgeTexto}>NUEVO</Text>
+              </View>
+            ) : null}
+          </View>
           {docente.cargo ? (
             <Text style={styles.tarjetaCargo} numberOfLines={1}>
               {docente.cargo}
@@ -316,7 +330,15 @@ const styles = StyleSheet.create({
   },
   tarjetaTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   tarjetaIdentidad: { flex: 1 },
-  tarjetaNombre: { color: colors.text, fontSize: type.value + 2, fontWeight: '800', lineHeight: 22 },
+  tarjetaNombreRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  tarjetaNombre: { flex: 1, color: colors.text, fontSize: type.value + 2, fontWeight: '800', lineHeight: 22 },
+  // Insignia "NUEVO": el docente llego de la nube y aun no se consulta su ficha.
+  nuevoBadge: {
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+  },
+  nuevoBadgeTexto: { color: '#ffffff', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
   tarjetaCargo: { color: colors.textSoft, fontSize: type.small + 1, marginTop: 2, fontWeight: '600' },
   carreraChip: {
     flexDirection: 'row',
