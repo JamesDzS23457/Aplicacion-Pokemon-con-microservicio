@@ -344,6 +344,36 @@ SQLite (`expo-sqlite`) que también sirve de cola de operaciones pendientes.
   actualiza la ficha existente con los datos locales (gana lo local) y queda un
   único registro.
 
+### Probar el modo offline y el monitor
+
+En **web** el respaldo SQLite usa `SharedArrayBuffer`, y el navegador solo lo
+habilita en un *contexto aislado*. El servidor de desarrollo de Expo (`npm run
+web`) **no** manda esas cabeceras, así que el espejo local no arrancaría. Para
+probarlo hay un servidor mínimo que sirve la exportación con las cabeceras
+puestas (las mismas de `vercel.json`):
+
+```bash
+npm run web:build        # genera dist/ (usa la URL de gateway de .env)
+npm run web:serve        # sirve en http://127.0.0.1:8088/docentes
+```
+
+Con la pestaña abierta:
+
+1. **Monitor**: los chips `2s/10s/30s/Off` cambian cada cuánto se revisa la nube
+   y a la derecha sale la hora de la última revisión.
+2. **Nuevo**: inserta un docente en la nube (Table Editor de Supabase, o
+   `curl -X POST <gateway>/api/docentes -H "Content-Type: application/json" -d '{"nombre":"Prueba"}'`).
+   En el siguiente ciclo aparece con la insignia **NUEVO**; al abrir su ficha se quita.
+3. **Offline**: en las DevTools, pestaña *Network*, marca **Offline** y crea un
+   docente. Avisa «Sin conexión - 1 pendiente(s)». (Navega primero y desconecta
+   después: `Offline` bloquea también esta página.)
+4. **Conflictos**: sin conexión crea un docente; mientras, crea el mismo nombre
+   en la nube. Reconecta: al sincronizar sale el aviso de fusión y en la nube
+   queda **un solo** registro.
+
+En **móvil** (Expo Go o build nativa) no hacen falta cabeceras: el modo avión
+deja la app sin red y SQLite es nativo.
+
 ## Despliegue
 
 ```bash
