@@ -1,4 +1,4 @@
-# Despliegue en Render: 4 web services independientes (gateway + 3 microservicios).
+# Despliegue en Render: 5 web services independientes (gateway + 4 microservicios).
 #   render blueprint launch
 #
 # LA BASE DE DATOS YA NO ESTA AQUI.
@@ -110,6 +110,52 @@ services:
       # PORT lo detecta Render. Ver la nota en pokemon-service.
 
   # ---------------------------------------------------------------
+  # Microservicio 4: Asistente de IA (Actividad en Clase 13)
+  #
+  # Es el servicio que consulta una IA PUBLICA (Google Gemini, plan gratuito)
+  # para responder preguntas de la app, limitando el contexto a su propia base
+  # de datos. No tiene base propia: arma el contexto pidiendo los datos a los
+  # otros tres microservicios (Pokemon, One Piece y Docentes) por su API.
+  #
+  # GEMINI_API_KEY es un secreto: va con sync:false y se pega en el dashboard
+  # (Environment). El frontend NUNCA la ve: la app habla con el gateway, el
+  # gateway con este servicio y este con la IA.
+  # ---------------------------------------------------------------
+  - type: web
+    name: asistente-service
+    runtime: node
+    plan: free
+    autoDeploy: true
+    rootDir: backend/services/asistente-service
+    buildCommand: npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      # Modelo gratis de Gemini. Se puede cambiar sin tocar el codigo.
+      - key: GEMINI_MODEL
+        value: "gemini-3.5-flash-lite"
+      # De donde saca el contexto (los otros microservicios), igual que el
+      # gateway: Render inyecta el hostname publico de cada servicio.
+      - key: POKEMON_SERVICE_URL
+        fromService:
+          name: pokemon-service
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: ONEPIECE_SERVICE_URL
+        fromService:
+          name: onepiece-service
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: DOCENTES_SERVICE_URL
+        fromService:
+          name: docentes-service
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      # PORT lo detecta Render. Ver la nota en pokemon-service.
+
+  # ---------------------------------------------------------------
   # API Gateway: unica URL que conoce el frontend
   # ---------------------------------------------------------------
   - type: web
@@ -158,5 +204,12 @@ services:
       - key: DOCENTES_SERVICE_URL
         fromService:
           name: docentes-service
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      # Servicio de IA: la app pregunta por aqui y el gateway reenvia al
+      # asistente. La clave de Gemini NO pasa por el gateway.
+      - key: ASISTENTE_SERVICE_URL
+        fromService:
+          name: asistente-service
           type: web
           envVarKey: RENDER_EXTERNAL_HOSTNAME

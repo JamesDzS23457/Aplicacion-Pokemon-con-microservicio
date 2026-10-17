@@ -47,6 +47,12 @@ export const colors = {
   docentesDark: '#0f4c2e',
   docentesSoft: '#e4f3ea',
 
+  // Acento Asistente IA (violeta). Es la sexta pestana y la unica que no son
+  // datos: por eso un color propio, para que se distinga de las secciones.
+  asistente: '#6d4dff',
+  asistenteDark: '#4227c4',
+  asistenteSoft: '#ece8ff',
+
   // Estados.
   success: '#2e8b57',
   successSoft: '#e6f5ec',

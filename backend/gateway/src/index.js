@@ -16,6 +16,7 @@ import cors from 'cors';
 import pokemonRoutes from './routes/pokemon.routes.js';
 import characterRoutes from './routes/characters.routes.js';
 import docenteRoutes from './routes/docentes.routes.js';
+import asistenteRoutes from './routes/asistente.routes.js';
 import indexRoutes from './routes/index.routes.js';
 import { config } from './config.js';
 import { crearLog, ENTORNO, clasificarDestino } from './lib/log.js';
@@ -60,6 +61,7 @@ app.use('/', indexRoutes);
 app.use('/api/pokemon', pokemonRoutes);
 app.use('/api/characters', characterRoutes);
 app.use('/api/docentes', docenteRoutes);
+app.use('/api/asistente', asistenteRoutes);
 
 /**
  * 404 global. Va DESPUES de todos los routers: si una ruta no coincidio con
@@ -84,4 +86,5 @@ app.listen(PORT, '0.0.0.0', () => {
   log(`pokemon  -> ${config.POKEMON_SERVICE_URL} (${clasificarDestino(config.POKEMON_SERVICE_URL)})`);
   log(`onepiece -> ${config.ONEPIECE_SERVICE_URL} (${clasificarDestino(config.ONEPIECE_SERVICE_URL)})`);
   log(`docentes -> ${config.DOCENTES_SERVICE_URL} (${clasificarDestino(config.DOCENTES_SERVICE_URL)})`);
+  log(`asistente -> ${config.ASISTENTE_SERVICE_URL} (${clasificarDestino(config.ASISTENTE_SERVICE_URL)})`);
 });

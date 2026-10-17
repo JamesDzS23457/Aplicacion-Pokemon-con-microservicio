@@ -1,4 +1,5 @@
 import { Stack } from 'expo-router';
+import { AsistenteProvider } from '../context/AsistenteContext';
 import { DocentesProvider } from '../context/DocentesContext';
 import { OnePieceProvider } from '../context/OnePieceContext';
 import { PokemonProvider } from '../context/PokemonContext';
@@ -23,7 +24,12 @@ export default function RootLayout() {
           pestana se recargue sola al volver a ella.
         */}
         <DocentesProvider>
-          <Stack screenOptions={{ headerShown: false }} />
+          {/* El asistente vive dentro del grupo (tabs), pero se pone aqui para
+              que la conversacion NO se pierda al cambiar de pestana: si el
+              provider se desmontara, se perderia el hilo del chat. */}
+          <AsistenteProvider>
+            <Stack screenOptions={{ headerShown: false }} />
+          </AsistenteProvider>
         </DocentesProvider>
       </OnePieceProvider>
     </PokemonProvider>

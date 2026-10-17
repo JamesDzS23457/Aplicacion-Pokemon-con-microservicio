@@ -3,10 +3,11 @@
 //
 // Mejora sobre el diseno anterior:
 //   - Cada seccion tiene su color activo: azul para Pokemon, coral para One
-//     Piece y verde para Docentes. Ayuda a saber en que parte de la app estas.
-//   - La quinta pestana (Docentes) tiene una etiqueta larga, asi que el texto de
-//     la barra baja un punto de tamano. Con cinco elementos la etiqueta "Docentes"
-//     se cortaba en "Docent..." en pantallas estrechas.
+//     Piece, verde para Docentes y violeta para el Asistente. Ayuda a saber en
+//     que parte de la app estas.
+//   - La quinta pestana (Docentes) tiene una etiqueta larga, y ahora la sexta
+//     (Asistente) tambien, asi que el texto de la barra baja a 9 puntos para que
+//     no se corten en pantallas estrechas.
 //   - Etiquetas mas claras ("Ficha" en vez de "Datos").
 //   - La barra lleva borde superior y una sombra suave para separarse del
 //     contenido al hacer scroll.
@@ -36,10 +37,11 @@ export default function TabsLayout() {
           shadowOffset: { width: 0, height: -4 },
           elevation: 8,
         },
-        // Un punto mas chico que antes (eran 11 con cuatro pestanas). Con cinco
-        // iconos la barra se estrecha y a 11 puntos "Docentes" se cortaba. El
-        // peso se sube para compensar el tamano.
-        tabBarLabelStyle: { fontSize: 10, fontWeight: '700' },
+        // Un punto mas chico que antes (eran 11 con cuatro pestanas). Con seis
+        // iconos (incluida "Asistente") la barra se estrecha mas, asi que baja a
+        // 9 puntos para que "Asistente" y "Docentes" no se corten. El peso se
+        // sube para compensar el tamano.
+        tabBarLabelStyle: { fontSize: 9, fontWeight: '700' },
       }}
     >
       <Tabs.Screen
@@ -90,6 +92,18 @@ export default function TabsLayout() {
           tabBarActiveTintColor: colors.docentes,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="school-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      {/* Sexta pestana: el asistente de IA (Actividad en Clase 13). Va ULTIMA
+          por el mismo motivo que Docentes: no desplazar lo que ya se conoce. */}
+      <Tabs.Screen
+        name="asistente"
+        options={{
+          title: 'Asistente',
+          tabBarActiveTintColor: colors.asistente,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="sparkles-outline" size={size} color={color} />
           ),
         }}
       />

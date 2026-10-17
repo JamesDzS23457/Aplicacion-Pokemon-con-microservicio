@@ -51,4 +51,7 @@ export const config = {
   POKEMON_SERVICE_URL: normalizeUrl(process.env.POKEMON_SERVICE_URL, 'http://localhost:4001'),
   ONEPIECE_SERVICE_URL: normalizeUrl(process.env.ONEPIECE_SERVICE_URL, 'http://localhost:4002'),
   DOCENTES_SERVICE_URL: normalizeUrl(process.env.DOCENTES_SERVICE_URL, 'http://localhost:4003'),
+  // Servicio de IA (Actividad en Clase 13). El gateway NO conoce la clave de la
+  // IA ni sabe de Gemini: solo reenvia la pregunta al microservicio.
+  ASISTENTE_SERVICE_URL: normalizeUrl(process.env.ASISTENTE_SERVICE_URL, 'http://localhost:4004'),
 };

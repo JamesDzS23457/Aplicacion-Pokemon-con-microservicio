@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// LEVANTAR LOS 4 PROCESOS A LA VEZ  (desarrollo)
+// LEVANTAR LOS 5 PROCESOS A LA VEZ  (desarrollo)
 //
 //   node scripts/dev.js
 //
@@ -77,6 +77,15 @@ const PROCESSES = [
     args: ['src/index.js'],
     cwd: path.join(root, 'services/docentes-service'),
     color: '\x1b[32m',
+  },
+  {
+    // Servicio de IA (Actividad en Clase 13). Llama a los otros tres por HTTP
+    // para armar el contexto, y a la IA publica por internet.
+    name: 'asistente-service',
+    command: 'node',
+    args: ['src/index.js'],
+    cwd: path.join(root, 'services/asistente-service'),
+    color: '\x1b[34m',
   },
   {
     name: 'gateway',

@@ -12,30 +12,50 @@ Inventario de datos cargados: `DATOS.md`.
 ```
 App (Expo)  ->  Gateway :3000  ->  pokemon-service :4001 (Node)     ->  PostgreSQL (Supabase)
    frontend      única URL         onepiece-service :4002 (Python)  ->  MongoDB (Atlas)
+                                 docentes-service :4003 (Node)     ->  PostgreSQL (Supabase)
                                  (solo el seed llama a las APIs externas)
+                                 asistente-service :4004 (Node)    ->  IA pública (Gemini)
+                                 (sin base propia; pide los datos a los otros tres)
 ```
 
 El frontend **solo conoce el gateway**. El gateway **solo reenvía** a los
-microservicios. Cada microservicio tiene **su propia base de datos**. Internet
-(PokeAPI, One Piece API, Jikan) **solo lo tocan los seeds**, nunca una búsqueda.
+microservicios. Cada microservicio de datos tiene **su propia base de datos**.
+Internet (PokeAPI, One Piece API, Jikan) **solo lo tocan los seeds**, nunca una
+búsqueda. La excepción es el **asistente de IA** (Actividad en Clase 13):
+`asistente-service` no tiene base, les pide los datos a los otros tres y consulta
+una **IA pública y gratuita** (Google Gemini), que es el único servicio que sale a
+internet al atender una petición.
 
 ## Frontend (Expo / React Native)
 
 - `app/_layout.tsx` - raíz de expo-router; envuelve la app en los providers de
-  Pokemon y One Piece.
+  Pokemon, One Piece, Docentes y Asistente.
 - `app/+not-found.tsx` - pantalla 404 ("esta pantalla no existe").
-- `app/(tabs)/_layout.tsx` - barra de las 4 pestañas (Pokemon, Ficha, One Piece,
-  Ficha OP) con su color e icono.
+- `app/(tabs)/_layout.tsx` - barra de las 6 pestañas (Pokemon, Ficha, One Piece,
+  Ficha OP, Docentes, Asistente) con su color e icono.
 - `app/(tabs)/index.tsx` - pantalla de búsqueda de Pokemon.
 - `app/(tabs)/about.tsx` - ficha/detalle del Pokemon encontrado.
 - `app/(tabs)/one-piece.tsx` - pantalla de búsqueda de personajes.
 - `app/(tabs)/one-piece-about.tsx` - ficha/detalle del personaje encontrado.
+- `app/(tabs)/docentes.tsx` - listado de docentes (la única pantalla con lista).
+- `app/docente/[id].tsx` - ficha completa de un docente. Está **fuera** de
+  `(tabs)` a propósito, para tener su propio botón de atrás.
+- `app/(tabs)/asistente.tsx` - chat con la IA (Actividad en Clase 13).
 - `components/ui.tsx` - piezas de UI reutilizables (encabezado, buscador,
   mosaicos, avisos, estado vacío, animación); no consultan la API.
+- `components/docentes.tsx` - componentes de la pestaña Docentes (tarjeta, foto,
+  chips de filtro).
+- `components/chat.tsx` - componentes del chat (burbuja, «escribiendo»,
+  interruptor de modo, sugerencias, barra de entrada).
 - `context/PokemonContext.tsx` - estado de la búsqueda de Pokemon; **único punto
   del frontend que llama al gateway** (`/api/pokemon/search`).
 - `context/OnePieceContext.tsx` - igual, para personajes
   (`/api/characters/search`).
+- `context/DocentesContext.tsx` - listado, filtros y ficha de docentes.
+- `context/AsistenteContext.tsx` - la conversación del chat (mensajes, modo,
+  carga); solo llama a `/api/asistente` del gateway.
+- `db/docentesLocal.ts` y `lib/conexion.ts` - espejo SQLite y detección de red
+  para el modo offline de Docentes (Tarea 10).
 - `lib/api.ts` - URL del gateway (`EXPO_PUBLIC_API_URL`) y logs del cliente.
 - `lib/format.ts` - formateadores puros (altura, peso, recompensa, talla).
 - `lib/theme.ts` - tokens de diseño (colores, espaciado, sombras, tipografía).
@@ -47,8 +67,9 @@ microservicios. Cada microservicio tiene **su propia base de datos**. Internet
 ## Gateway (Node / Express, puerto 3000)
 
 - `backend/gateway/src/index.js` - arranque; CORS, JSON y montaje de rutas.
-- `backend/gateway/src/config.js` - resuelve y normaliza las URLs de los dos
-  microservicios (`POKEMON_SERVICE_URL`, `ONEPIECE_SERVICE_URL`).
+- `backend/gateway/src/config.js` - resuelve y normaliza las URLs de los
+  microservicios (`POKEMON_SERVICE_URL`, `ONEPIECE_SERVICE_URL`,
+  `DOCENTES_SERVICE_URL`, `ASISTENTE_SERVICE_URL`).
 - `backend/gateway/src/proxy.js` - reenvía la petición al microservicio, mide el
   tiempo, aplica timeout de 60s y responde 503 si el servicio no contesta.
 - `backend/gateway/src/routes/index.routes.js` - `GET /`: diagnóstico (entorno y
@@ -57,6 +78,11 @@ microservicios. Cada microservicio tiene **su propia base de datos**. Internet
   pokemon-service.
 - `backend/gateway/src/routes/characters.routes.js` - `/api/characters*`
   reenviadas a onepiece-service.
+- `backend/gateway/src/routes/docentes.routes.js` - `/api/docentes*` reenviadas a
+  docentes-service, con lista blanca de query params y de campos de escritura.
+- `backend/gateway/src/routes/asistente.routes.js` - `/api/asistente` reenviada al
+  asistente; filtra el cuerpo con lista blanca (`pregunta`, `modo`, `historial`).
+  El gateway **no conoce la clave de la IA**.
 - `backend/gateway/src/lib/log.js` - logs con fecha y clasificación
   LOCAL/DESPLEGADO.
 - `backend/gateway/package.json` y `package-lock.json` - dependencias.
@@ -155,9 +181,36 @@ path params (`:id`, `:termino`) y query params (`?q=`, `?carrera=`). La escritur
 (`POST`, `PUT`, `DELETE`) recibe un JSON en el cuerpo, leido con tope de tamaño,
 y el gateway filtra sus campos con lista blanca.
 
+## asistente-service (Node / Express + IA pública, puerto 4004)
+
+El cuarto microservicio (Actividad en Clase 13). **No tiene base de datos**: arma
+el contexto pidiéndole los datos a los otros tres por HTTP y consulta una **IA
+pública y gratuita** (Google Gemini). Es el único que sale a internet al atender
+una petición normal.
+
+- `src/index.js` - arranque; monta `/docs`, `/openapi.json` y las rutas. **Arranca
+  en degradado si falta `GEMINI_API_KEY`** (no se cae; `/health` lo avisa).
+- `src/swagger.js` - Swagger/OpenAPI (como Pokémon: `swagger-jsdoc`).
+- `src/routes/asistente.routes.js` - capa HTTP de `POST /api/asistente`.
+- `src/services/asistente.service.js` - la **guardia**: decide si la pregunta cae
+  en el contexto (y niega sin llamar a la IA) y arma el prompt (CATALOGO +
+  CONTEXTO).
+- `src/repositories/contexto.repository.js` - **único lugar que pide los datos** a
+  los otros microservicios; cachea el catálogo 5 min.
+- `src/external/gemini.client.js` - **única capa que llama a Gemini** (internet).
+- `src/config.js` - `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_BASE_URL`,
+  `CATALOGO_TTL_MS`, `IA_TIMEOUT_MS` y las URLs de los otros servicios.
+- `src/lib/normalize.js`, `src/lib/log.js` - utilidades.
+
+Dos modos, que son las **dos fases del enunciado** en la misma pantalla:
+`restringido` (solo la base de la app; fuera de eso responde
+`No estoy programada para dar ese tipo de preguntas.`) y `abierto` (responde
+cualquier pregunta). La respuesta incluye `motor` (`"guardia"` o `"gemini"`) y
+`enAlcance`.
+
 ## Scripts del backend
 
-- `backend/scripts/dev.js` - levanta los 4 procesos a la vez (Node + Python).
+- `backend/scripts/dev.js` - levanta los 5 procesos a la vez (Node + Python).
 - `backend/scripts/seed.js` - ejecuta el seed de Pokemon (crea esquema y carga).
 - `backend/scripts/seed-pokemon.js` - lista de los 20 Pokemon y su carga desde
   PokeAPI.
@@ -186,8 +239,8 @@ y el gateway filtra sus campos con lista blanca.
 - `package.json` - scripts de npm del proyecto (app + `backend:*`).
 - `backend/package.json` - scripts del backend (gateway, servicios, seed,
   verify, offline-test, setup).
-- `render.yaml` - despliegue de los 4 servicios web en Render.
-- `.env.example` - plantilla de variables (gateway y bases de datos).
+- `render.yaml` - despliegue de los 5 servicios web en Render.
+- `.env.example` - plantilla de variables (gateway, bases de datos y la clave de la IA).
 - `.env.production` - URL pública del gateway para el build de Vercel.
 - `.gitignore` - lo que no se versiona.
 - `README.md` - documentación técnica detallada (montaje, API, despliegue).
@@ -216,6 +269,7 @@ y el gateway filtra sus campos con lista blanca.
 | POST | `/api/docentes` | Agrega un docente; body JSON con los datos (el `nombre` es obligatorio). Responde 201. |
 | PUT | `/api/docentes/:id` | Actualiza los campos que vengan en el body JSON; los demas quedan igual. |
 | DELETE | `/api/docentes/:id` | Borra un docente; no lleva cuerpo. |
+| POST | `/api/asistente` | Pregunta al asistente de IA. Body `{ "pregunta", "modo", "historial" }`. |
 
 ## Documentación Swagger (requisito)
 
@@ -224,6 +278,7 @@ y el gateway filtra sus campos con lista blanca.
 - docentes-service: `/docs` y `/openapi.json` (puerto 4003). Swagger UI se carga
   desde un CDN, así que **esa página necesita internet**; el contrato en
   `/openapi.json` se sirve siempre.
+- asistente-service: `/docs`, `/redoc`, `/openapi.json` (puerto 4004).
 - Públicos: `https://pokemon-service-rtjy.onrender.com/docs` y
   `https://onepiece-service.onrender.com/docs`.
 
@@ -232,7 +287,7 @@ y el gateway filtra sus campos con lista blanca.
 ```bash
 npm install                 # dependencias del frontend
 npm run backend:setup       # deps del backend + venv Python + seed (necesita internet)
-npm run backend             # gateway + pokemon + onepiece + docentes
+npm run backend             # gateway + pokemon + onepiece + docentes + asistente
 npm run web                 # la app en el navegador
 npm run backend:verify      # comprobar BD, búsqueda y límite de 20
 ```
@@ -250,10 +305,14 @@ npm run backend:verify      # comprobar BD, búsqueda y límite de 20
   dependencia (`pg`).
 - **Path params y query params, nunca body params** ->
   `docentes-service`: solo expone `GET` y no lee el cuerpo de las peticiones.
-- Documentado con Swagger -> `/docs` en los tres microservicios.
-- Público -> 4 servicios en Render + frontend en Vercel.
+- Documentado con Swagger -> `/docs` en los cuatro microservicios.
+- **IA en la app (Actividad en Clase 13)** -> `asistente-service` + la pestaña
+  Asistente: conecta una IA pública (Gemini), la limita al contexto de la propia
+  base y responde la frase de rechazo cuando la pregunta se sale del tema.
+- Público -> 5 servicios en Render + frontend en Vercel.
 - El frontend no toca APIs externas -> los contextos solo llaman al gateway; las
-  APIs externas viven en `external/` y solo las usa el seed.
+  APIs externas viven en `external/` y solo las usa el seed (salvo la IA, que la
+  usa el asistente en cada consulta).
 
 ## Carpetas que no entran a la entrega
 

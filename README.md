@@ -1,7 +1,8 @@
 # APP_Pokemon
 
-Aplicación web Expo (SDK 57) con Pokédex, buscador de personajes de One Piece y
-listado de docentes de Uninpahu.
+Aplicación web Expo (SDK 57) con Pokédex, buscador de personajes de One Piece,
+listado de docentes de Uninpahu y un **asistente de IA** que responde preguntas
+sobre esos mismos datos.
 Los datos se sirven desde **microservicios propios**, cada uno con **su propia base
 de datos**. Pokémon y One Piece se cargaron una vez desde las APIs públicas de
 PokéAPI y One Piece; los docentes se cargaron a mano en su propia base de Supabase
@@ -15,6 +16,12 @@ enunciado:
 | Pokémon | Node.js / Express | **Relacional**: PostgreSQL en Supabase | body (`POST /search`) |
 | One Piece | Python / FastAPI | **No relacional**: MongoDB en Atlas | body (`POST /search`) |
 | Docentes | Node.js **sin framework** | **Relacional**: PostgreSQL en Supabase | **lectura por URL, escritura con JSON** |
+
+Hay un **cuarto microservicio**, el **asistente de IA** (Node.js / Express), que es
+la **excepción deliberada**: **no tiene base de datos propia**. Arma el contexto
+pidiéndole los datos a los otros tres por HTTP, se los pasa a una **IA pública y
+gratuita** (Google Gemini) y limita las respuestas a esa información. Su detalle
+está en [Asistente de IA](#asistente-de-ia-actividad-en-clase-13).
 
 El tercero es el que cumple los requisitos adicionales: está escrito sin ningún
 framework de HTTP (solo `node:http`, y su única dependencia es el driver `pg`).
@@ -63,6 +70,22 @@ tres publican su documentación **Swagger**.
   internet para cargarlos ni para consultarlos.
 ```
 
+**El asistente de IA (cuarto microservicio) tiene su propio camino**, y por eso no
+está en el dibujo de arriba: no tiene base de datos, les pide los datos a los otros
+tres por HTTP y consulta una IA pública.
+
+```
+  FRONTEND ──► GATEWAY :3000 ──► asistente-service :4004 ──► Google Gemini
+                                        │                      (IA pública,
+                                        │                       plan gratuito)
+                                        └──► pokemon / onepiece / docentes
+                                             (les pide los datos, por HTTP)
+```
+
+El asistente es **el único que sale a internet durante una consulta normal**; los
+otros tres solo salen en su `seed`. Su capa `external/` es la única del backend que
+habla con una API externa al atender una petición de usuario.
+
 **Regla clave:** hay dos flujos distintos.
 
 | Flujo | ¿Quién llama a la API externa? | ¿Cuándo? |
@@ -81,10 +104,11 @@ Cada microservicio se documenta solo (es un requisito del trabajo):
 | Pokémon (Node + Express) | `/docs` | `/openapi.json` |
 | One Piece (Python + FastAPI) | `/docs` y `/redoc` | `/openapi.json` |
 | Docentes (Node sin framework) | `/docs` | `/openapi.json` |
+| Asistente (Node + Express) | `/docs` | `/openapi.json` |
 
-En local: <http://localhost:4001/docs>, <http://localhost:4002/docs> y
-<http://localhost:4003/docs>. En producción, la misma ruta sobre el subdominio
-del servicio en Render.
+En local: <http://localhost:4001/docs>, <http://localhost:4002/docs>,
+<http://localhost:4003/docs> y <http://localhost:4004/docs>. En producción, la
+misma ruta sobre el subdominio del servicio en Render.
 
 El de docentes está **escrito a mano**: el contrato es un objeto OpenAPI 3.0.3
 en `src/docs/openapi.js` y la interfaz es una página HTML propia que carga
@@ -100,7 +124,7 @@ cp .env.example .env
 # 2. Instala dependencias (incluye el entorno virtual de Python) y carga los datos
 npm run backend:setup
 
-# 3. Levanta gateway + los 3 microservicios
+# 3. Levanta gateway + los 4 microservicios
 npm run backend
 
 # 4. En otra terminal, la app
@@ -111,13 +135,19 @@ npm start          # o: npm run web
 `backend/services/onepiece-service/.venv`. Si prefieres crearlo por separado:
 `npm run backend:onepiece:env`.
 
+Para que el asistente responda de verdad hace falta una **clave gratuita de
+Gemini** en `.env` (`GEMINI_API_KEY`; ver [Asistente de IA](#asistente-de-ia-actividad-en-clase-13)).
+Sin ella el resto de la app funciona igual: el asistente arranca en modo degradado
+y lo avisa en su `/health`.
+
 ### Comandos
 
 | Comando | Qué hace |
 |---|---|
-| `npm run backend:setup` | Instala los paquetes de los 3 servicios + el venv Python y corre los seeds |
-| `npm run backend` | Levanta los 4 procesos con logs coloreados |
+| `npm run backend:setup` | Instala los paquetes de los 4 servicios + el venv Python y corre los seeds |
+| `npm run backend` | Levanta los 5 procesos con logs coloreados |
 | `npm run backend:docentes` | Levanta solo el microservicio de docentes (`:4003`) |
+| `npm run backend:asistente` | Levanta solo el microservicio de IA (`:4004`) |
 | `npm run backend:onepiece:env` | Solo crea/actualiza el entorno virtual de Python |
 | `npm run backend:seed` | Recarga los 20 personajes y 20 Pokémon (requiere internet) |
 | `npm run backend:seed:pokemon` | Solo el seed de Pokémon (Node) |
@@ -201,12 +231,18 @@ servicio, así que da igual desde dónde se lance el proceso.
 | `GET` | `/api/docentes/facetas` | — |
 | `GET` | `/api/docentes/buscar/:termino` | el término va en el **path** |
 | `GET` | `/api/docentes/:id` | el id va en el **path** |
+| `POST` | `/api/asistente` | `{ "pregunta": "...", "modo": "restringido"\|"abierto", "historial": [{"rol","texto"}] }` |
 
 Ojo con la diferencia entre las tres familias de rutas: Pokémon y One Piece
 reciben el dato de la búsqueda en el **cuerpo** (`POST` + JSON), mientras que
 Docentes **solo acepta `GET`** y todo lo que necesita viaja en la URL. No es un
 detalle de estilo: es el requisito del trabajo, y por eso el gateway tampoco
 declara ningún `POST` en `/api/docentes`.
+
+`POST /api/asistente` es el único `POST` que **no** es una búsqueda: lleva el
+cuerpo con la pregunta y el modo, y el gateway lo filtra con una **lista blanca**
+(`pregunta`, `modo`, `historial`). La clave de Gemini **no pasa por el gateway**:
+vive solo en el microservicio.
 
 La documentación interactiva de cada microservicio está en su `/docs` (ver
 [Documentación Swagger](#documentación-swagger)).
@@ -276,8 +312,10 @@ backend/
 │   │   ├── src/{db,repositories,services,routers,external,lib}/ + main.py
 │   │   ├── requirements.txt
 │   │   └── seed.py
-│   └── docentes-service/                             (Node SIN framework)
-│       └── src/{db,repositories,services,routes,http,lib,docs}/
+│   ├── docentes-service/                             (Node SIN framework)
+│   │   └── src/{db,repositories,services,routes,http,lib,docs}/
+│   └── asistente-service/                            (Node + Express + IA)
+│       └── src/{repositories,services,routes,external,lib}/ + swagger.js
 └── scripts/
     ├── {seed,seed-pokemon,generate-datos,verify,dev}.js + onepiece-env.sh
     ├── docentes-datos.js        (los docentes; se edita o se deja el Table Editor)
@@ -291,12 +329,17 @@ Su capa HTTP es `src/http/` (router y respuestas escritas a mano) y no necesita
 (`services/`, `repositories/`, `db/`, `lib/`) son idénticas en nombre y
 responsabilidad, para que los tres se lean igual.
 
+El servicio del asistente tiene la diferencia contraria: **no tiene `db/`** (no
+tiene base propia) y su `repositories/` habla con las bases **ajenas** a través de
+los otros tres microservicios. Es el único con `external/` que sale a internet en
+tiempo de consulta.
+
 | Capa | Responsabilidad |
 |---|---|
 | `routes/` (Node) · `routers/` (Python) | HTTP. Traduce request/response. Sin lógica. |
 | `services/` | Reglas de negocio y validaciones. Sin acceso a la base. |
-| `repositories/` | **Única capa que habla con la base de datos** (SQL en Pokémon y docentes, consultas de MongoDB en One Piece). |
-| `external/` | **Única capa que hace peticiones a internet.** Pokémon y One Piece la tienen; docentes no, porque no llama a ninguna API externa. |
+| `repositories/` | **Única capa que habla con los datos** (SQL en Pokémon y docentes, consultas de MongoDB en One Piece; en el asistente, peticiones a los otros microservicios). |
+| `external/` | **Única capa que hace peticiones a internet.** Pokémon y One Piece la tienen (solo en el seed), docentes no, y en el asistente es la llamada a la IA. |
 
 Aislar el acceso a datos en `repositories/` es lo que permitió cambiar de SQLite
 a PostgreSQL, reescribir el servicio de One Piece de Node a Python y después
@@ -305,17 +348,19 @@ contrato HTTP**. La API pública es idéntica en los tres casos.
 
 ## Interfaz
 
-El diseño vive en piezas compartidas, para que las cinco pantallas no se
+El diseño vive en piezas compartidas, para que las seis pantallas no se
 desincronicen:
 
 - `lib/theme.ts`: colores, espaciados, radios y sombras. Cada sección tiene su
   acento (azul para Pokémon, coral para One Piece, verde institucional para
-  Docentes).
+  Docentes y violeta para el Asistente).
 - `components/ui.tsx`: encabezado, buscador, mosaicos de datos, estados vacíos,
   avisos y animación de entrada. Comunes a todas.
 - `components/docentes.tsx`: solo de la quinta pestaña. Photo-or-initials,
   tarjeta, botón «Leer más» y chips de filtro. Van aparte a propósito: si se
   metieran en `ui.tsx`, Pokémon y One Piece arrastrarían código que no usan.
+- `components/chat.tsx`: solo de la sexta pestaña. Burbujas, indicador de
+  «escribiendo», interruptor de modo, chips de sugerencia y barra de entrada.
 
 Los valores técnicos se humanizan antes de mostrarse: la altura y el peso de
 PokéAPI (decímetros y hectogramos) pasan a metros y kilos, y las recompensas de
@@ -374,14 +419,113 @@ Con la pestaña abierta:
 En **móvil** (Expo Go o build nativa) no hacen falta cabeceras: el modo avión
 deja la app sin red y SQLite es nativo.
 
+## Asistente de IA (Actividad en Clase 13)
+
+La sexta pestaña (**Asistente**) es un chat que responde preguntas sobre los datos
+de la propia app con una **IA pública y gratuita**: **Google Gemini** (plan free).
+
+La actividad tenía **dos fases**, y las dos están implementadas en la misma
+pantalla, con un interruptor:
+
+| Fase | Modo | Qué hace |
+|---|---|---|
+| 1. Conectar la IA | **Abierto** | Responde cualquier pregunta (para demostrar la conexión). |
+| 2. Limitar al contexto | **Solo mi base de datos** | Solo responde de los Pokémon, los personajes de One Piece y los docentes de la app. |
+
+Cuando la pregunta se sale del contexto, el asistente responde **exactamente**:
+
+```
+No estoy programada para dar ese tipo de preguntas.
+```
+
+### Cómo está separado (front / back / IA)
+
+```
+app/(tabs)/asistente.tsx ─► AsistenteContext ─► GATEWAY :3000 ─► asistente-service :4004 ─► Gemini
+      (chat)                  (estado)          POST /api/asistente        (contexto)         (IA pública)
+```
+
+- **El frontend nunca ve la clave de la IA** ni habla con Gemini: solo conoce el
+  gateway, como el resto de la app.
+- **El gateway tampoco la ve**: reenvía la pregunta y filtra el cuerpo con una
+  lista blanca.
+- **El asistente-service** es el único que tiene la clave y el único que sale a
+  internet (`src/external/gemini.client.js`).
+
+### Cómo arma el contexto (y por qué no hay "RAG")
+
+No tiene base propia: en `repositories/contexto.repository.js` les pide los
+catálogos a los otros tres microservicios (`GET /api/pokemon`,
+`GET /api/characters`, `GET /api/docentes`), los cachea 5 minutos y arma dos
+bloques:
+
+- un **CATALOGO** con el nombre de las 42 entidades (20 + 20 + 2), que es la lista
+  de lo que la IA *puede* tocar;
+- un **CONTEXTO** con la ficha completa de las entidades que la pregunta menciona.
+
+Para buscar la mención normaliza el texto (sin acentos ni mayúsculas), igual que
+el resto del backend. Como el catálogo es pequeño (42), no hace falta ninguna
+técnica de recuperación: cabe entero en el prompt.
+
+### Dos capas de defensa (y por qué)
+
+1. **Guardia en el servidor** (`services/asistente.service.js`): si la pregunta no
+   menciona ninguna entidad del catálogo y no es una pregunta claramente de la app,
+   devuelve la frase de rechazo **sin llamar a la IA**. Es determinista y **gasta
+   cuota cero**.
+2. **Instrucción de sistema**: el prompt le repite la regla a la IA para los casos
+   dudosos (una pregunta que menciona a Pikachu pero deriva a otro tema).
+
+Dentro del tema, la IA **sí** puede usar su conocimiento general para completar
+datos de una entidad permitida (por ejemplo, «¿en qué capítulo sale Pikachu?»): lo
+que no puede es salirse de las entidades de la app.
+
+### Configuración
+
+En `.env` (solo del backend; el `.env.example` ya trae la plantilla):
+
+| Variable | Para qué | Por defecto |
+|---|---|---|
+| `GEMINI_API_KEY` | Clave de Gemini. **Sin ella el servicio arranca en degradado** y lo avisa. | — |
+| `GEMINI_MODEL` | Modelo gratis. Se cambia sin tocar código. | `gemini-3.5-flash-lite` |
+| `GEMINI_BASE_URL` | Base de la API (útil para apuntar a un mock en pruebas). | Gemini |
+| `CATALOGO_TTL_MS` | Cuánto se cachea el catálogo. | `300000` (5 min) |
+| `IA_TIMEOUT_MS` | Tiempo máximo de espera de la IA. | `45000` |
+
+Clave gratuita: <https://aistudio.google.com/> → *Get API key*. Google retiró la
+serie 2.5 para proyectos nuevos (su API responde *«no longer available to new
+users»*), así que el defecto es `gemini-3.5-flash-lite`, que fue el más rápido en
+la prueba (~0.9 s); `gemini-3.5-flash` y `gemini-3.8-flash` dan más calidad a más
+latencia.
+
+### Probar el asistente
+
+```bash
+# Pregunta dentro del contexto (necesita GEMINI_API_KEY)
+curl -X POST localhost:3000/api/asistente -H 'Content-Type: application/json' \
+  -d '{"pregunta":"que tipos tiene Pikachu?","modo":"restringido"}'
+
+# Pregunta fuera del contexto: responde la frase exacta SIN gastar cuota
+curl -X POST localhost:3000/api/asistente -H 'Content-Type: application/json' \
+  -d '{"pregunta":"quien gano el mundial 2022?","modo":"restringido"}'
+
+# Modo abierto: la misma pregunta ahora se responde
+curl -X POST localhost:3000/api/asistente -H 'Content-Type: application/json' \
+  -d '{"pregunta":"quien gano el mundial 2022?","modo":"abierto"}'
+```
+
+La respuesta trae `modo`, `enAlcance` y `motor`: `"guardia"` cuando la negó el
+servidor sin llamar a la IA, y `"gemini"` cuando respondió el modelo.
+
 ## Despliegue
 
 ```bash
 render blueprint launch
 ```
 
-`render.yaml` define los 4 servicios. Las URLs de base de datos se configuran
-en el dashboard de Render (`sync: false` evita que aparezcan en los logs).
+`render.yaml` define los 5 servicios. Las URLs de base de datos y la clave de la
+IA se configuran en el dashboard de Render (`sync: false` evita que aparezcan en
+los logs).
 
 **Pasos para el microservicio de docentes en Render:**
 
@@ -397,6 +541,22 @@ en el dashboard de Render (`sync: false` evita que aparezcan en los logs).
    blueprint (`fromService`), así que no hay que hacer nada. Si el gateway ya
    existía antes de este cambio, hay que **añadirla a mano**.
 4. No se fija `PORT`: Render detecta el puerto y lo inyecta.
+
+**Pasos para el microservicio del asistente en Render:**
+
+1. Crear el servicio desde el blueprint (`rootDir`
+   `backend/services/asistente-service`, runtime `node`).
+2. En `Environment`, pegar `GEMINI_API_KEY` con `sync: false`: **no aparece sola**.
+   Sin ella el servicio **arranca igual** (en degradado) y su `/health` dice
+   `ia: sin configurar`, pero no responde preguntas.
+3. En el servicio `gateway`, `ASISTENTE_SERVICE_URL` se inyecta sola (`fromService`);
+   si el gateway ya existía antes de este cambio, hay que **añadirla a mano**.
+4. `GEMINI_MODEL` sí va fijada en el blueprint (`gemini-3.5-flash-lite`), así que se
+   puede cambiar ahí sin tocar código.
+
+El asistente **no tiene base de datos**, así que no necesita ninguna URL de
+Supabase ni de Atlas. Consigue los datos por HTTP de los otros tres servicios, que
+sí las tienen.
 
 El microservicio de One Piece declara `runtime: python` (el único que no es
 Node) y fija `PYTHON_VERSION=3.12.7`: es una versión con ruedas precompiladas de
